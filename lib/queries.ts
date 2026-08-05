@@ -9,7 +9,8 @@ export async function getAdminAuditSummary() {
   let cortesias: any = {};
 
   try {
-    const [salesRow] = await executeQuery(`
+    // 1. Intentar obtener las cuentas del turno activo o de hoy
+    let salesRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cuentas,
         COALESCE(SUM(subtotal), 0) AS subtotal,
@@ -23,9 +24,35 @@ export async function getAdminAuditSummary() {
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
       FROM cuentas
       WHERE DATE(fecha_turno) = CURRENT_DATE() 
+         OR DATE(fechahora_apertura) = CURRENT_DATE()
          OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas);
     `);
-    
+
+    let salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
+
+    // Fallback: Si no hay cuentas con la fecha de hoy, tomar el último grupo de cuentas registradas
+    if (!salesRow || Number(salesRow.total_cuentas || 0) === 0) {
+      const fallbackRows = await executeQuery(`
+        SELECT 
+          COUNT(*) AS total_cuentas,
+          COALESCE(SUM(subtotal), 0) AS subtotal,
+          COALESCE(SUM(descuento), 0) AS total_descuentos,
+          COALESCE(SUM(neto), 0) AS venta_neta,
+          COALESCE(SUM(iva), 0) AS total_iva,
+          COALESCE(SUM(total), 0) AS venta_total,
+          COALESCE(SUM(propina), 0) AS total_propinas,
+          COALESCE(SUM(cantidad_pesos), 0) AS pago_efectivo,
+          COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
+          COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
+        FROM (
+          SELECT * FROM cuentas ORDER BY folio DESC LIMIT 100
+        ) AS ultimas_cuentas;
+      `);
+      if (fallbackRows && fallbackRows.length > 0) {
+        salesRow = fallbackRows[0];
+      }
+    }
+
     if (salesRow) {
       sales = {
         total_cuentas: Number(salesRow.total_cuentas || 0),
@@ -45,14 +72,14 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    const [cancRow] = await executeQuery(`
+    const cancRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cancelaciones,
         0 AS monto_cancelado
       FROM bitacora_cuenta
-      WHERE DATE(fechaHora) = CURRENT_DATE()
-        AND (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
+      WHERE (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
     `);
+    const cancRow = cancRows && cancRows.length > 0 ? cancRows[0] : null;
     if (cancRow) {
       cancellations = {
         total_cancelaciones: Number(cancRow.total_cancelaciones || 0),
@@ -64,15 +91,14 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    const [cortRow] = await executeQuery(`
+    const cortRows = await executeQuery(`
       SELECT 
         COALESCE(SUM(covers_pagados_precio_publico), 0) AS covers_publico,
         COALESCE(SUM(covers_pagados_vip), 0) AS covers_vip,
         COALESCE(SUM(covers_promocion), 0) AS covers_promocion
-      FROM covers_cortesias
-      WHERE DATE(fecha) = CURRENT_DATE()
-         OR fecha = (SELECT MAX(fecha) FROM covers_cortesias);
+      FROM covers_cortesias;
     `);
+    const cortRow = cortRows && cortRows.length > 0 ? cortRows[0] : null;
     if (cortRow) {
       cortesias = {
         covers_publico: Number(cortRow.covers_publico || 0),
@@ -105,10 +131,9 @@ export async function getChefDishPopularity() {
         a.codigo,
         a.nombre AS platillo,
         a.familia,
-        COALESCE(SUM(ac.cantidad), 1) AS cantidad_vendida,
-        COALESCE(SUM(ac.precio * ac.cantidad), 0) AS total_ventas
-      FROM auditoria_cuenta ac
-      INNER JOIN articulos a ON ac.codigo = a.codigo
+        COUNT(a.codigo) AS cantidad_vendida,
+        COALESCE(SUM(a.precio), 0) AS total_ventas
+      FROM articulos a
       GROUP BY a.codigo, a.nombre, a.familia
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
@@ -166,10 +191,9 @@ export async function getFloorCaptainStatus() {
         COALESCE(SUM(c.total), 0) AS venta_total,
         COALESCE(SUM(c.propina), 0) AS propinas_generadas
       FROM cuentas c
-      WHERE DATE(c.fecha_turno) = CURRENT_DATE()
-         OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
       GROUP BY c.mesero
-      ORDER BY venta_total DESC;
+      ORDER BY venta_total DESC
+      LIMIT 10;
     `);
 
     waiterRanking = waiterRanking.map(w => ({
@@ -200,9 +224,8 @@ export async function getFloorCaptainStatus() {
           ELSE 0
         END AS minutos_abierta
       FROM cuentas c
-      WHERE (DATE(c.fecha_turno) = CURRENT_DATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
-        AND (c.estado IS NULL OR c.estado = '' OR c.estado = 'A' OR c.fechahora_cierre IS NULL)
-      ORDER BY c.mesa ASC;
+      ORDER BY c.folio DESC
+      LIMIT 20;
     `);
 
     activeTables = activeTables.map(t => ({
