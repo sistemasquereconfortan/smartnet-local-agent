@@ -1,16 +1,17 @@
 import { executeQuery } from './db';
 
 /**
- * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones y Formas de Pago)
+ * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia de Ventas y Tabla de Cuentas)
  */
 export async function getAdminAuditSummary() {
   let sales: any = {};
   let cancellations: any = { total_cancelaciones: 0, monto_cancelado: 0 };
-  let cortesias: any = {};
+  let accountDetails: any[] = [];
+  let dailyTrend: any[] = [];
 
   try {
-    // 1. Intentar obtener las cuentas del turno activo o de hoy
-    let salesRows = await executeQuery(`
+    // 1. Resumen general del turno actual
+    const salesRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cuentas,
         COALESCE(SUM(subtotal), 0) AS subtotal,
@@ -23,35 +24,10 @@ export async function getAdminAuditSummary() {
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
       FROM cuentas
-      WHERE DATE(fecha_turno) = CURRENT_DATE() 
-         OR DATE(fechahora_apertura) = CURRENT_DATE()
-         OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas);
+      WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas);
     `);
 
-    let salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
-
-    // Fallback: Si no hay cuentas con la fecha de hoy, tomar el último grupo de cuentas registradas
-    if (!salesRow || Number(salesRow.total_cuentas || 0) === 0) {
-      const fallbackRows = await executeQuery(`
-        SELECT 
-          COUNT(*) AS total_cuentas,
-          COALESCE(SUM(subtotal), 0) AS subtotal,
-          COALESCE(SUM(descuento), 0) AS total_descuentos,
-          COALESCE(SUM(neto), 0) AS venta_neta,
-          COALESCE(SUM(iva), 0) AS total_iva,
-          COALESCE(SUM(total), 0) AS venta_total,
-          COALESCE(SUM(propina), 0) AS total_propinas,
-          COALESCE(SUM(cantidad_pesos), 0) AS pago_efectivo,
-          COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
-          COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
-        FROM (
-          SELECT * FROM cuentas ORDER BY folio DESC LIMIT 100
-        ) AS ultimas_cuentas;
-      `);
-      if (fallbackRows && fallbackRows.length > 0) {
-        salesRow = fallbackRows[0];
-      }
-    }
+    const salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
 
     if (salesRow) {
       sales = {
@@ -72,12 +48,80 @@ export async function getAdminAuditSummary() {
   }
 
   try {
+    // 2. Tendencia de Venta Neta Diaria de los últimos 14 días (para la gráfica del jefe)
+    dailyTrend = await executeQuery(`
+      SELECT 
+        DATE_FORMAT(fecha_turno, '%Y-%m-%d') AS fecha,
+        COALESCE(SUM(neto), 0) AS venta_neta,
+        COALESCE(SUM(total), 0) AS venta_total,
+        COUNT(*) AS total_cuentas
+      FROM cuentas
+      WHERE fecha_turno IS NOT NULL
+      GROUP BY fecha_turno
+      ORDER BY fecha_turno DESC
+      LIMIT 14;
+    `);
+
+    // Invertir para mostrar de más antiguo a más reciente (izquierda a derecha)
+    dailyTrend = dailyTrend.reverse().map(d => ({
+      fecha: d.fecha,
+      venta_neta: Number(d.venta_neta || 0),
+      venta_total: Number(d.venta_total || 0),
+      total_cuentas: Number(d.total_cuentas || 0),
+    }));
+  } catch (e) {
+    console.error('Error fetching daily trend:', e);
+  }
+
+  try {
+    // 3. Tabla de detalle de cada cuenta del turno para el jefe/auditor
+    accountDetails = await executeQuery(`
+      SELECT 
+        folio,
+        mesa,
+        mesero,
+        COALESCE(subtotal, 0) AS subtotal,
+        COALESCE(descuento, 0) AS descuento,
+        COALESCE(total, 0) AS total,
+        COALESCE(propina, 0) AS propina,
+        COALESCE(cantidad_pesos, 0) AS efectivo,
+        COALESCE(pago1_cantidad + pago2_cantidad + pago3_cantidad, 0) AS tarjeta,
+        COALESCE(cantidad_dolares, 0) AS dolares,
+        DATE_FORMAT(fechahora_apertura, '%H:%i') AS hora_apertura,
+        DATE_FORMAT(fechahora_cierre, '%H:%i') AS hora_cierre,
+        estado
+      FROM cuentas
+      WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
+      ORDER BY folio DESC;
+    `);
+
+    accountDetails = accountDetails.map(acc => ({
+      folio: acc.folio,
+      mesa: acc.mesa,
+      mesero: acc.mesero,
+      subtotal: Number(acc.subtotal || 0),
+      descuento: Number(acc.descuento || 0),
+      total: Number(acc.total || 0),
+      propina: Number(acc.propina || 0),
+      efectivo: Number(acc.efectivo || 0),
+      tarjeta: Number(acc.tarjeta || 0),
+      dolares: Number(acc.dolares || 0),
+      hora_apertura: acc.hora_apertura || '--:--',
+      hora_cierre: acc.hora_cierre || '--:--',
+      estado: acc.estado,
+    }));
+  } catch (e) {
+    console.error('Error fetching account details:', e);
+  }
+
+  try {
     const cancRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cancelaciones,
         0 AS monto_cancelado
       FROM bitacora_cuenta
-      WHERE (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
+      WHERE DATE(fechaHora) = CURDATE()
+        AND (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
     `);
     const cancRow = cancRows && cancRows.length > 0 ? cancRows[0] : null;
     if (cancRow) {
@@ -90,31 +134,12 @@ export async function getAdminAuditSummary() {
     console.error('Error fetching cancellations:', e);
   }
 
-  try {
-    const cortRows = await executeQuery(`
-      SELECT 
-        COALESCE(SUM(covers_pagados_precio_publico), 0) AS covers_publico,
-        COALESCE(SUM(covers_pagados_vip), 0) AS covers_vip,
-        COALESCE(SUM(covers_promocion), 0) AS covers_promocion
-      FROM covers_cortesias;
-    `);
-    const cortRow = cortRows && cortRows.length > 0 ? cortRows[0] : null;
-    if (cortRow) {
-      cortesias = {
-        covers_publico: Number(cortRow.covers_publico || 0),
-        covers_vip: Number(cortRow.covers_vip || 0),
-        covers_promocion: Number(cortRow.covers_promocion || 0),
-      };
-    }
-  } catch (e) {
-    console.error('Error fetching cortesias:', e);
-  }
-
   return {
     fecha: new Date().toISOString().split('T')[0],
     resumen_ventas: sales,
     auditoria_cancelaciones: cancellations,
-    cortesias: cortesias,
+    tendencia_diaria: dailyTrend,
+    detalle_cuentas: accountDetails,
   };
 }
 
@@ -191,6 +216,7 @@ export async function getFloorCaptainStatus() {
         COALESCE(SUM(c.total), 0) AS venta_total,
         COALESCE(SUM(c.propina), 0) AS propinas_generadas
       FROM cuentas c
+      WHERE c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
       GROUP BY c.mesero
       ORDER BY venta_total DESC
       LIMIT 10;
@@ -224,6 +250,7 @@ export async function getFloorCaptainStatus() {
           ELSE 0
         END AS minutos_abierta
       FROM cuentas c
+      WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
       ORDER BY c.folio DESC
       LIMIT 20;
     `);
