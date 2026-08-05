@@ -2,15 +2,28 @@ import { executeQuery } from './db';
 
 /**
  * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia y Tabla de Cuentas)
+ * @param range 'hoy' | 'semana' | 'mes'
  */
-export async function getAdminAuditSummary() {
+export async function getAdminAuditSummary(range: string = 'hoy') {
   let sales: any = {};
   let cancellations: any = { total_cancelaciones: 0, monto_cancelado: 0 };
   let accountDetails: any[] = [];
   let dailyTrend: any[] = [];
 
+  // Construir la condición de fecha SQL según el rango seleccionado
+  let dateWhere = `WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)`;
+  let trendLimit = 14;
+
+  if (range === 'semana') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+    trendLimit = 7;
+  } else if (range === 'mes') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+    trendLimit = 30;
+  }
+
   try {
-    // 1. Resumen general del turno actual
+    // 1. Resumen general del rango seleccionado
     const salesRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cuentas,
@@ -24,7 +37,7 @@ export async function getAdminAuditSummary() {
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
       FROM cuentas
-      WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas);
+      ${dateWhere};
     `);
 
     const salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
@@ -48,7 +61,7 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    // 2. Tendencia de Venta Neta Diaria de los últimos 14 días (compatible MySQL 5.1)
+    // 2. Tendencia de Venta Neta Diaria (compatible MySQL 5.1)
     const rawTrend = await executeQuery(`
       SELECT 
         CAST(fecha_turno AS CHAR) AS fecha,
@@ -59,10 +72,9 @@ export async function getAdminAuditSummary() {
       WHERE fecha_turno IS NOT NULL
       GROUP BY fecha_turno
       ORDER BY fecha_turno DESC
-      LIMIT 14;
+      LIMIT ${trendLimit};
     `);
 
-    // Invertir para mostrar de más antiguo a más reciente (izquierda a derecha)
     dailyTrend = (rawTrend || []).reverse().map(d => ({
       fecha: String(d.fecha || '').slice(0, 10),
       venta_neta: Number(d.venta_neta || 0),
@@ -74,7 +86,7 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    // 3. Tabla de detalle de cada cuenta del turno (compatible MySQL 5.1)
+    // 3. Tabla de detalle de cuentas según el rango seleccionado
     const rawAccounts = await executeQuery(`
       SELECT 
         folio,
@@ -91,8 +103,9 @@ export async function getAdminAuditSummary() {
         CAST(fechahora_cierre AS CHAR) AS hora_cierre,
         estado
       FROM cuentas
-      WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
-      ORDER BY folio DESC;
+      ${dateWhere}
+      ORDER BY folio DESC
+      LIMIT 100;
     `);
 
     accountDetails = (rawAccounts || []).map(acc => {
@@ -138,6 +151,7 @@ export async function getAdminAuditSummary() {
   }
 
   return {
+    rango_seleccionado: range,
     fecha: new Date().toISOString().split('T')[0],
     resumen_ventas: sales,
     auditoria_cancelaciones: cancellations,
