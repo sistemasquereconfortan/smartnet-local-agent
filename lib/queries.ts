@@ -1,7 +1,7 @@
 import { executeQuery } from './db';
 
 /**
- * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia de Ventas y Tabla de Cuentas)
+ * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia y Tabla de Cuentas)
  */
 export async function getAdminAuditSummary() {
   let sales: any = {};
@@ -48,10 +48,10 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    // 2. Tendencia de Venta Neta Diaria de los últimos 14 días (para la gráfica del jefe)
-    dailyTrend = await executeQuery(`
+    // 2. Tendencia de Venta Neta Diaria de los últimos 14 días (compatible MySQL 5.1)
+    const rawTrend = await executeQuery(`
       SELECT 
-        DATE_FORMAT(fecha_turno, '%Y-%m-%d') AS fecha,
+        CAST(fecha_turno AS CHAR) AS fecha,
         COALESCE(SUM(neto), 0) AS venta_neta,
         COALESCE(SUM(total), 0) AS venta_total,
         COUNT(*) AS total_cuentas
@@ -63,8 +63,8 @@ export async function getAdminAuditSummary() {
     `);
 
     // Invertir para mostrar de más antiguo a más reciente (izquierda a derecha)
-    dailyTrend = dailyTrend.reverse().map(d => ({
-      fecha: d.fecha,
+    dailyTrend = (rawTrend || []).reverse().map(d => ({
+      fecha: String(d.fecha || '').slice(0, 10),
       venta_neta: Number(d.venta_neta || 0),
       venta_total: Number(d.venta_total || 0),
       total_cuentas: Number(d.total_cuentas || 0),
@@ -74,8 +74,8 @@ export async function getAdminAuditSummary() {
   }
 
   try {
-    // 3. Tabla de detalle de cada cuenta del turno para el jefe/auditor
-    accountDetails = await executeQuery(`
+    // 3. Tabla de detalle de cada cuenta del turno (compatible MySQL 5.1)
+    const rawAccounts = await executeQuery(`
       SELECT 
         folio,
         mesa,
@@ -87,29 +87,33 @@ export async function getAdminAuditSummary() {
         COALESCE(cantidad_pesos, 0) AS efectivo,
         COALESCE(pago1_cantidad + pago2_cantidad + pago3_cantidad, 0) AS tarjeta,
         COALESCE(cantidad_dolares, 0) AS dolares,
-        DATE_FORMAT(fechahora_apertura, '%H:%i') AS hora_apertura,
-        DATE_FORMAT(fechahora_cierre, '%H:%i') AS hora_cierre,
+        CAST(fechahora_apertura AS CHAR) AS hora_apertura,
+        CAST(fechahora_cierre AS CHAR) AS hora_cierre,
         estado
       FROM cuentas
       WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
       ORDER BY folio DESC;
     `);
 
-    accountDetails = accountDetails.map(acc => ({
-      folio: acc.folio,
-      mesa: acc.mesa,
-      mesero: acc.mesero,
-      subtotal: Number(acc.subtotal || 0),
-      descuento: Number(acc.descuento || 0),
-      total: Number(acc.total || 0),
-      propina: Number(acc.propina || 0),
-      efectivo: Number(acc.efectivo || 0),
-      tarjeta: Number(acc.tarjeta || 0),
-      dolares: Number(acc.dolares || 0),
-      hora_apertura: acc.hora_apertura || '--:--',
-      hora_cierre: acc.hora_cierre || '--:--',
-      estado: acc.estado,
-    }));
+    accountDetails = (rawAccounts || []).map(acc => {
+      const apStr = String(acc.hora_apertura || '');
+      const ciStr = String(acc.hora_cierre || '');
+      return {
+        folio: acc.folio,
+        mesa: String(acc.mesa || 'Mesa'),
+        mesero: String(acc.mesero || '--'),
+        subtotal: Number(acc.subtotal || 0),
+        descuento: Number(acc.descuento || 0),
+        total: Number(acc.total || 0),
+        propina: Number(acc.propina || 0),
+        efectivo: Number(acc.efectivo || 0),
+        tarjeta: Number(acc.tarjeta || 0),
+        dolares: Number(acc.dolares || 0),
+        hora_apertura: apStr.length >= 16 ? apStr.slice(11, 16) : (apStr || '--:--'),
+        hora_cierre: ciStr.length >= 16 ? ciStr.slice(11, 16) : (ciStr || '--:--'),
+        estado: acc.estado,
+      };
+    });
   } catch (e) {
     console.error('Error fetching account details:', e);
   }
@@ -120,8 +124,7 @@ export async function getAdminAuditSummary() {
         COUNT(*) AS total_cancelaciones,
         0 AS monto_cancelado
       FROM bitacora_cuenta
-      WHERE DATE(fechaHora) = CURDATE()
-        AND (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
+      WHERE (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
     `);
     const cancRow = cancRows && cancRows.length > 0 ? cancRows[0] : null;
     if (cancRow) {
