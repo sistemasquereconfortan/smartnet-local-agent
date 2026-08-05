@@ -1,17 +1,20 @@
 const Service = require('node-windows').Service;
 const path = require('path');
 
-// Configure the Windows Service
+// Configure the Windows Service using custom server.js
 const svc = new Service({
   name: 'SmartNet Local Agent - Autoctona',
   description: 'Agente local de lectura para los dashboards de Cocina que Reconforta',
-  script: path.join(__dirname, '..', 'node_modules', 'next', 'dist', 'bin', 'next'),
-  scriptArgs: ['start', '-p', '3000'],
+  script: path.join(__dirname, '..', 'server.js'),
   workingDirectory: path.join(__dirname, '..'),
   env: [
     {
       name: 'NODE_ENV',
       value: 'production',
+    },
+    {
+      name: 'PORT',
+      value: '3000',
     },
   ],
 });

@@ -22,9 +22,24 @@ export async function getAdminAuditSummary() {
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
       FROM cuentas
-      WHERE fecha_turno = CURRENT_DATE();
+      WHERE DATE(fecha_turno) = CURRENT_DATE() 
+         OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas);
     `);
-    sales = salesRow || {};
+    
+    if (salesRow) {
+      sales = {
+        total_cuentas: Number(salesRow.total_cuentas || 0),
+        subtotal: Number(salesRow.subtotal || 0),
+        total_descuentos: Number(salesRow.total_descuentos || 0),
+        venta_neta: Number(salesRow.venta_neta || 0),
+        total_iva: Number(salesRow.total_iva || 0),
+        venta_total: Number(salesRow.venta_total || 0),
+        total_propinas: Number(salesRow.total_propinas || 0),
+        pago_efectivo: Number(salesRow.pago_efectivo || 0),
+        pago_tarjetas: Number(salesRow.pago_tarjetas || 0),
+        pago_dolares: Number(salesRow.pago_dolares || 0),
+      };
+    }
   } catch (e) {
     console.error('Error fetching sales summary:', e);
   }
@@ -38,7 +53,12 @@ export async function getAdminAuditSummary() {
       WHERE DATE(fechaHora) = CURRENT_DATE()
         AND (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
     `);
-    cancellations = cancRow || { total_cancelaciones: 0, monto_cancelado: 0 };
+    if (cancRow) {
+      cancellations = {
+        total_cancelaciones: Number(cancRow.total_cancelaciones || 0),
+        monto_cancelado: Number(cancRow.monto_cancelado || 0),
+      };
+    }
   } catch (e) {
     console.error('Error fetching cancellations:', e);
   }
@@ -50,9 +70,16 @@ export async function getAdminAuditSummary() {
         COALESCE(SUM(covers_pagados_vip), 0) AS covers_vip,
         COALESCE(SUM(covers_promocion), 0) AS covers_promocion
       FROM covers_cortesias
-      WHERE fecha = CURRENT_DATE();
+      WHERE DATE(fecha) = CURRENT_DATE()
+         OR fecha = (SELECT MAX(fecha) FROM covers_cortesias);
     `);
-    cortesias = cortRow || {};
+    if (cortRow) {
+      cortesias = {
+        covers_publico: Number(cortRow.covers_publico || 0),
+        covers_vip: Number(cortRow.covers_vip || 0),
+        covers_promocion: Number(cortRow.covers_promocion || 0),
+      };
+    }
   } catch (e) {
     console.error('Error fetching cortesias:', e);
   }
@@ -86,6 +113,12 @@ export async function getChefDishPopularity() {
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
     `);
+
+    topDishes = topDishes.map(d => ({
+      ...d,
+      cantidad_vendida: Number(d.cantidad_vendida || 0),
+      total_ventas: Number(d.total_ventas || 0),
+    }));
   } catch (e) {
     console.error('Error fetching top dishes:', e);
   }
@@ -100,6 +133,12 @@ export async function getChefDishPopularity() {
       GROUP BY familia
       LIMIT 10;
     `);
+
+    familySummary = familySummary.map(f => ({
+      ...f,
+      total_unidades: Number(f.total_unidades || 0),
+      total_importe: Number(f.total_importe || 0),
+    }));
   } catch (e) {
     console.error('Error fetching family summary:', e);
   }
@@ -127,10 +166,19 @@ export async function getFloorCaptainStatus() {
         COALESCE(SUM(c.total), 0) AS venta_total,
         COALESCE(SUM(c.propina), 0) AS propinas_generadas
       FROM cuentas c
-      WHERE c.fecha_turno = CURRENT_DATE()
+      WHERE DATE(c.fecha_turno) = CURRENT_DATE()
+         OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
       GROUP BY c.mesero
       ORDER BY venta_total DESC;
     `);
+
+    waiterRanking = waiterRanking.map(w => ({
+      ...w,
+      mesas_atendidas: Number(w.mesas_atendidas || 0),
+      comensales_atendidos: Number(w.comensales_atendidos || 0),
+      venta_total: Number(w.venta_total || 0),
+      propinas_generadas: Number(w.propinas_generadas || 0),
+    }));
   } catch (e) {
     console.error('Error fetching waiter ranking:', e);
   }
@@ -152,10 +200,18 @@ export async function getFloorCaptainStatus() {
           ELSE 0
         END AS minutos_abierta
       FROM cuentas c
-      WHERE c.fecha_turno = CURRENT_DATE()
+      WHERE (DATE(c.fecha_turno) = CURRENT_DATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
         AND (c.estado IS NULL OR c.estado = '' OR c.estado = 'A' OR c.fechahora_cierre IS NULL)
       ORDER BY c.mesa ASC;
     `);
+
+    activeTables = activeTables.map(t => ({
+      ...t,
+      personas: Number(t.personas || 0),
+      subtotal: Number(t.subtotal || 0),
+      total: Number(t.total || 0),
+      minutos_abierta: Number(t.minutos_abierta || 0),
+    }));
   } catch (e) {
     console.error('Error fetching active tables:', e);
   }
