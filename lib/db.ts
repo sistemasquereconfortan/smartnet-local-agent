@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || '192.168.1.234',
+  host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT) || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASS || 'Sm4rtn3t_2021',
@@ -12,19 +12,35 @@ const pool = mysql.createPool({
   connectTimeout: 5000,
 });
 
+// Catch pool errors to prevent Node process from crashing on connection resets
+if ((pool as any).pool) {
+  (pool as any).pool.on('error', (err: any) => {
+    console.error('⚠️ MySQL Pool Error Event:', err?.message || err);
+  });
+}
+
 /**
  * Executes a SELECT query with READ UNCOMMITTED isolation level
- * to prevent locking table rows on the local SmartNet POS database.
+ * Safely handles connection release and query errors without crashing Node.
  */
 export async function executeQuery<T = any>(sql: string, params: any[] = []): Promise<T[]> {
-  const connection = await pool.getConnection();
+  let connection;
   try {
-    // Zero-locking read isolation level
+    connection = await pool.getConnection();
     await connection.query('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED');
     const [rows] = await connection.query(sql, params);
     return rows as T[];
+  } catch (error: any) {
+    console.error('❌ Database Query Error:', error?.message || error);
+    return [];
   } finally {
-    connection.release();
+    if (connection) {
+      try {
+        connection.release();
+      } catch (e) {
+        // connection release fallback
+      }
+    }
   }
 }
 
