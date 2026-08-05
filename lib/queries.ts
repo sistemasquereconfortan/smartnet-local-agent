@@ -161,53 +161,83 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
 }
 
 /**
- * CHEF: Popularidad de Platillos y Familias de Alimentos
+ * CHEF: Popularidad de Platillos y Familias de Alimentos (Detalle Real de Comanda)
  */
 export async function getChefDishPopularity() {
   let topDishes: any[] = [];
   let familySummary: any[] = [];
 
   try {
+    // 1. Obtener los platillos más vendidos desde cuentas_detalle uniendo con articulos
     topDishes = await executeQuery(`
       SELECT 
-        a.codigo,
-        a.nombre AS platillo,
-        a.familia,
-        COUNT(a.codigo) AS cantidad_vendida,
-        COALESCE(SUM(a.precio), 0) AS total_ventas
-      FROM articulos a
-      GROUP BY a.codigo, a.nombre, a.familia
+        d.codigo,
+        COALESCE(a.nombre, d.codigo) AS platillo,
+        COALESCE(a.familia, 'General') AS familia,
+        SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
+        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
+      FROM cuentas_detalle d
+      LEFT JOIN articulos a ON d.codigo = a.codigo
+      GROUP BY d.codigo, platillo, familia
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
     `);
 
-    topDishes = topDishes.map(d => ({
-      ...d,
+    topDishes = (topDishes || []).map(d => ({
+      codigo: String(d.codigo || ''),
+      platillo: String(d.platillo || 'Platillo'),
+      familia: String(d.familia || 'General'),
       cantidad_vendida: Number(d.cantidad_vendida || 0),
       total_ventas: Number(d.total_ventas || 0),
     }));
   } catch (e) {
-    console.error('Error fetching top dishes:', e);
+    console.error('Error fetching top dishes from cuentas_detalle:', e);
+  }
+
+  // Fallback si cuentas_detalle no devolvió filas
+  if (!topDishes || topDishes.length === 0) {
+    try {
+      topDishes = await executeQuery(`
+        SELECT 
+          codigo,
+          nombre AS platillo,
+          COALESCE(familia, 'General') AS familia,
+          1 AS cantidad_vendida,
+          0 AS total_ventas
+        FROM articulos
+        LIMIT 10;
+      `);
+      topDishes = (topDishes || []).map(d => ({
+        ...d,
+        cantidad_vendida: Number(d.cantidad_vendida || 0),
+        total_ventas: Number(d.total_ventas || 0),
+      }));
+    } catch (err) {
+      console.error('Fallback query error:', err);
+    }
   }
 
   try {
+    // 2. Resumen por familias desde cuentas_detalle
     familySummary = await executeQuery(`
       SELECT 
-        familia,
-        COUNT(*) AS total_unidades,
-        COALESCE(SUM(precio), 0) AS total_importe
-      FROM articulos
+        COALESCE(a.familia, 'General') AS familia,
+        SUM(COALESCE(d.cantidad, 1)) AS total_unidades,
+        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_importe
+      FROM cuentas_detalle d
+      LEFT JOIN articulos a ON d.codigo = a.codigo
       GROUP BY familia
+      ORDER BY total_unidades DESC
       LIMIT 10;
     `);
 
-    familySummary = familySummary.map(f => ({
-      ...f,
+    familySummary = (familySummary || []).map(f => ({
+      familia: String(f.familia || 'Sin Categoría'),
       total_unidades: Number(f.total_unidades || 0),
       total_importe: Number(f.total_importe || 0),
     }));
   } catch (e) {
-    console.error('Error fetching family summary:', e);
+    console.error('Error fetching family summary from cuentas_detalle:', e);
   }
 
   return {
