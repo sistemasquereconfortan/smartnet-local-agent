@@ -2,7 +2,7 @@ import { executeQuery } from './db';
 
 /**
  * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia y Tabla de Cuentas)
- * @param range 'hoy' | 'semana' | 'mes'
+ * @param range 'hoy' | 'semana' | 'mes' | 'todo'
  */
 export async function getAdminAuditSummary(range: string = 'hoy') {
   let sales: any = {};
@@ -20,6 +20,9 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
   } else if (range === 'mes') {
     dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
     trendLimit = 30;
+  } else if (range === 'todo') {
+    dateWhere = `WHERE fecha_turno IS NOT NULL`;
+    trendLimit = 60;
   }
 
   try {
@@ -245,14 +248,26 @@ export async function getChefDishPopularity() {
 }
 
 /**
- * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero (Con Nombre y Rango/Puesto Real)
+ * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero
+ * @param range 'hoy' | 'semana' | 'mes' | 'todo'
  */
-export async function getFloorCaptainStatus() {
+export async function getFloorCaptainStatus(range: string = 'hoy') {
   let waiterRanking: any[] = [];
   let activeTables: any[] = [];
 
+  // Construir la condición de fecha SQL según el rango seleccionado
+  let dateWhere = `WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
+
+  if (range === 'semana') {
+    dateWhere = `WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+  } else if (range === 'mes') {
+    dateWhere = `WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+  } else if (range === 'todo') {
+    dateWhere = `WHERE c.fecha_turno IS NOT NULL`;
+  }
+
   try {
-    // 1. Intenta unir cuentas con la tabla personal y rangos para obtener Nombre Real y Puesto Real
+    // 1. Consulta uniendo cuentas con personal y rangos para obtener Nombre Real y Puesto Real
     waiterRanking = await executeQuery(`
       SELECT 
         CAST(c.mesero AS CHAR) AS id_mesero,
@@ -265,7 +280,7 @@ export async function getFloorCaptainStatus() {
       FROM cuentas c
       LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
       LEFT JOIN rangos r ON p.rango = r.codigo
-      WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
+      ${dateWhere}
         AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
       GROUP BY c.mesero, p.nombre, r.nombre
       ORDER BY venta_total DESC
@@ -284,7 +299,7 @@ export async function getFloorCaptainStatus() {
           COALESCE(SUM(c.total), 0) AS venta_total,
           COALESCE(SUM(c.propina), 0) AS propinas_registradas
         FROM cuentas c
-        WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
+        ${dateWhere}
           AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
         GROUP BY c.mesero
         ORDER BY venta_total DESC
@@ -295,14 +310,19 @@ export async function getFloorCaptainStatus() {
     }
   }
 
-  // Mapear métricas detalladas requeridas por la capitana
+  // Mapear métricas detalladas y aplicar la regla de propina (SOLO PUESTO MESERO PAGA TIRA DEL 6%)
   waiterRanking = (waiterRanking || []).map(w => {
     const ventaTotal = Number(w.venta_total || 0);
     const mesasAtendidas = Number(w.mesas_atendidas || 0);
     const paxTotal = Number(w.comensales_atendidos || 0);
     const ticketPromedioMesa = mesasAtendidas > 0 ? ventaTotal / mesasAtendidas : 0;
     const ticketPromedioPax = paxTotal > 0 ? ventaTotal / paxTotal : 0;
-    const tiraPropina6 = ventaTotal * 0.06;
+    
+    // REGLA SOLICITADA: Únicamente el rango/puesto Mesero o mesero paga tira del 6%
+    const cargoLower = String(w.cargo_puesto || '').toLowerCase().trim();
+    const esMeseroTira = cargoLower === 'mesero' || cargoLower.includes('meser');
+    const tiraPropina6 = esMeseroTira ? ventaTotal * 0.06 : 0;
+    
     const meseroIdClean = String(w.id_mesero || '').trim();
 
     return {
@@ -314,6 +334,7 @@ export async function getFloorCaptainStatus() {
       venta_total: ventaTotal,
       ticket_promedio_mesa: ticketPromedioMesa,
       ticket_promedio_pax: ticketPromedioPax,
+      es_mesero_tira: esMeseroTira,
       tira_propina_6pct: tiraPropina6,
       propinas_registradas: Number(w.propinas_registradas || 0),
     };
@@ -346,7 +367,7 @@ export async function getFloorCaptainStatus() {
         END AS minutos_abierta
       FROM cuentas c
       LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
-      WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
+      ${dateWhere}
       ORDER BY 
         CASE WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
         c.fechahora_apertura DESC
@@ -372,6 +393,7 @@ export async function getFloorCaptainStatus() {
   }
 
   return {
+    rango_seleccionado: range,
     fecha: new Date().toISOString().split('T')[0],
     ranking_meseros: waiterRanking,
     mesas_activas: activeTables,

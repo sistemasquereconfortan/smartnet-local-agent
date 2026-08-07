@@ -7,7 +7,8 @@ export async function GET(request: NextRequest) {
   if (!auth.valid) return auth.response!;
 
   try {
-    const data = await getFloorCaptainStatus();
+    const range = request.nextUrl.searchParams.get('range') || 'hoy';
+    const data = await getFloorCaptainStatus(range);
     return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json(
