@@ -269,8 +269,8 @@ export async function getFloorCaptainStatus() {
       ORDER BY venta_total DESC
       LIMIT 30;
     `);
-  } catch (e) {
-    console.warn('JOIN with personal failed, falling back to direct cuentas query:', e?.message);
+  } catch (e: any) {
+    console.warn('JOIN with personal failed, falling back to direct cuentas query:', e?.message || e);
     try {
       waiterRanking = await executeQuery(`
         SELECT 
