@@ -91,7 +91,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
       SELECT 
         folio,
         mesa,
-        mesero,
+        CAST(mesero AS CHAR) AS mesero,
         COALESCE(subtotal, 0) AS subtotal,
         COALESCE(descuento, 0) AS descuento,
         COALESCE(total, 0) AS total,
@@ -252,11 +252,11 @@ export async function getFloorCaptainStatus() {
   let activeTables: any[] = [];
 
   try {
-    // Consulta directa y ultrarrápida agrupada por mesero en cuentas
+    // Usamos CAST(c.mesero AS CHAR) para convertir el campo binario/BLOB a texto legible
     waiterRanking = await executeQuery(`
       SELECT 
-        c.mesero AS id_mesero,
-        CONCAT('Mesero ', c.mesero) AS nombre_mesero,
+        CAST(c.mesero AS CHAR) AS id_mesero,
+        CONCAT('Mesero ', CAST(c.mesero AS CHAR)) AS nombre_mesero,
         'Mesero' AS cargo_puesto,
         COUNT(c.mesa) AS mesas_atendidas,
         COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
@@ -281,11 +281,12 @@ export async function getFloorCaptainStatus() {
     const ticketPromedioMesa = mesasAtendidas > 0 ? ventaTotal / mesasAtendidas : 0;
     const ticketPromedioPax = paxTotal > 0 ? ventaTotal / paxTotal : 0;
     const tiraPropina6 = ventaTotal * 0.06;
+    const meseroIdClean = String(w.id_mesero || '').trim();
 
     return {
-      id_mesero: String(w.id_mesero || ''),
-      nombre_mesero: String(w.nombre_mesero || `Mesero ${w.id_mesero}`),
-      cargo_puesto: String(w.cargo_puesto || 'Mesero'),
+      id_mesero: meseroIdClean,
+      nombre_mesero: `Mesero ${meseroIdClean}`,
+      cargo_puesto: 'Mesero',
       mesas_atendidas: mesasAtendidas,
       pax_total: paxTotal,
       venta_total: ventaTotal,
@@ -304,7 +305,7 @@ export async function getFloorCaptainStatus() {
         c.serie,
         c.caja,
         c.mesa,
-        c.mesero,
+        CAST(c.mesero AS CHAR) AS mesero,
         c.personas,
         c.subtotal,
         c.total,
