@@ -245,32 +245,54 @@ export async function getChefDishPopularity() {
 }
 
 /**
- * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero
+ * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero (Con Nombre y Rango/Puesto Real)
  */
 export async function getFloorCaptainStatus() {
   let waiterRanking: any[] = [];
   let activeTables: any[] = [];
 
   try {
-    // Usamos CAST(c.mesero AS CHAR) para convertir el campo binario/BLOB a texto legible
+    // 1. Intenta unir cuentas con la tabla personal y rangos para obtener Nombre Real y Puesto Real
     waiterRanking = await executeQuery(`
       SELECT 
         CAST(c.mesero AS CHAR) AS id_mesero,
-        CONCAT('Mesero ', CAST(c.mesero AS CHAR)) AS nombre_mesero,
-        'Mesero' AS cargo_puesto,
+        COALESCE(p.nombre, CONCAT('Mesero ', CAST(c.mesero AS CHAR))) AS nombre_mesero,
+        COALESCE(r.nombre, 'Mesero') AS cargo_puesto,
         COUNT(c.mesa) AS mesas_atendidas,
         COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
         COALESCE(SUM(c.total), 0) AS venta_total,
         COALESCE(SUM(c.propina), 0) AS propinas_registradas
       FROM cuentas c
+      LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
+      LEFT JOIN rangos r ON p.rango = r.codigo
       WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
         AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
-      GROUP BY c.mesero
+      GROUP BY c.mesero, p.nombre, r.nombre
       ORDER BY venta_total DESC
       LIMIT 30;
     `);
-  } catch (err) {
-    console.error('Error fetching waiter ranking:', err);
+  } catch (err: any) {
+    console.warn('JOIN with personal/rangos failed, falling back to direct cuentas query:', err?.message || err);
+    try {
+      waiterRanking = await executeQuery(`
+        SELECT 
+          CAST(c.mesero AS CHAR) AS id_mesero,
+          CONCAT('Mesero ', CAST(c.mesero AS CHAR)) AS nombre_mesero,
+          'Mesero' AS cargo_puesto,
+          COUNT(c.mesa) AS mesas_atendidas,
+          COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
+          COALESCE(SUM(c.total), 0) AS venta_total,
+          COALESCE(SUM(c.propina), 0) AS propinas_registradas
+        FROM cuentas c
+        WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
+          AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
+        GROUP BY c.mesero
+        ORDER BY venta_total DESC
+        LIMIT 30;
+      `);
+    } catch (e) {
+      console.error('Error fetching waiter ranking fallback:', e);
+    }
   }
 
   // Mapear métricas detalladas requeridas por la capitana
@@ -285,8 +307,8 @@ export async function getFloorCaptainStatus() {
 
     return {
       id_mesero: meseroIdClean,
-      nombre_mesero: `Mesero ${meseroIdClean}`,
-      cargo_puesto: 'Mesero',
+      nombre_mesero: String(w.nombre_mesero || `Mesero ${meseroIdClean}`).trim(),
+      cargo_puesto: String(w.cargo_puesto || 'Mesero').trim(),
       mesas_atendidas: mesasAtendidas,
       pax_total: paxTotal,
       venta_total: ventaTotal,
@@ -306,6 +328,7 @@ export async function getFloorCaptainStatus() {
         c.caja,
         c.mesa,
         CAST(c.mesero AS CHAR) AS mesero,
+        COALESCE(p.nombre, CONCAT('Mesero ', CAST(c.mesero AS CHAR))) AS nombre_mesero,
         c.personas,
         c.subtotal,
         c.total,
@@ -322,6 +345,7 @@ export async function getFloorCaptainStatus() {
           ELSE 0
         END AS minutos_abierta
       FROM cuentas c
+      LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
       WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
       ORDER BY 
         CASE WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
@@ -334,7 +358,7 @@ export async function getFloorCaptainStatus() {
       serie: String(t.serie || ''),
       caja: String(t.caja || ''),
       mesa: String(t.mesa || 'Mesa'),
-      mesero: String(t.mesero || '--'),
+      mesero: String(t.nombre_mesero || t.mesero || '--'),
       personas: Number(t.personas || 0),
       subtotal: Number(t.subtotal || 0),
       total: Number(t.total || 0),
