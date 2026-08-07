@@ -168,7 +168,6 @@ export async function getChefDishPopularity() {
   let familySummary: any[] = [];
 
   try {
-    // 1. Obtener los platillos más vendidos desde cuentas_detalle uniendo con articulos
     topDishes = await executeQuery(`
       SELECT 
         d.codigo,
@@ -194,7 +193,6 @@ export async function getChefDishPopularity() {
     console.error('Error fetching top dishes from cuentas_detalle:', e);
   }
 
-  // Fallback si cuentas_detalle no devolvió filas
   if (!topDishes || topDishes.length === 0) {
     try {
       topDishes = await executeQuery(`
@@ -218,7 +216,6 @@ export async function getChefDishPopularity() {
   }
 
   try {
-    // 2. Resumen por familias desde cuentas_detalle
     familySummary = await executeQuery(`
       SELECT 
         COALESCE(a.familia, 'General') AS familia,
@@ -248,42 +245,81 @@ export async function getChefDishPopularity() {
 }
 
 /**
- * CAPITANA DE PISO: Productividad de Meseros y Mesas Activas en Tiempo Real
+ * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero
  */
 export async function getFloorCaptainStatus() {
   let waiterRanking: any[] = [];
   let activeTables: any[] = [];
 
   try {
+    // Intenta unir cuentas con el catálogo de personal si existe la tabla
     waiterRanking = await executeQuery(`
       SELECT 
-        c.mesero AS codigo_mesero,
-        COUNT(c.folio) AS mesas_atendidas,
+        c.mesero AS id_mesero,
+        COALESCE(p.nombre, CONCAT('Mesero ', c.mesero)) AS nombre_mesero,
+        COALESCE(p.puesto, 'Mesero') AS cargo_puesto,
+        COUNT(c.mesa) AS mesas_atendidas,
         COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
         COALESCE(SUM(c.total), 0) AS venta_total,
-        COALESCE(SUM(c.propina), 0) AS propinas_generadas
+        COALESCE(SUM(c.propina), 0) AS propinas_registradas
       FROM cuentas c
+      LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
       WHERE c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
-      GROUP BY c.mesero
+      GROUP BY c.mesero, p.nombre, p.puesto
       ORDER BY venta_total DESC
-      LIMIT 10;
+      LIMIT 30;
     `);
-
-    waiterRanking = waiterRanking.map(w => ({
-      ...w,
-      mesas_atendidas: Number(w.mesas_atendidas || 0),
-      comensales_atendidos: Number(w.comensales_atendidos || 0),
-      venta_total: Number(w.venta_total || 0),
-      propinas_generadas: Number(w.propinas_generadas || 0),
-    }));
   } catch (e) {
-    console.error('Error fetching waiter ranking:', e);
+    console.warn('JOIN with personal failed, falling back to direct cuentas query:', e?.message);
+    try {
+      waiterRanking = await executeQuery(`
+        SELECT 
+          c.mesero AS id_mesero,
+          CONCAT('Mesero ', c.mesero) AS nombre_mesero,
+          'Mesero' AS cargo_puesto,
+          COUNT(c.mesa) AS mesas_atendidas,
+          COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
+          COALESCE(SUM(c.total), 0) AS venta_total,
+          COALESCE(SUM(c.propina), 0) AS propinas_registradas
+        FROM cuentas c
+        WHERE c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
+        GROUP BY c.mesero
+        ORDER BY venta_total DESC
+        LIMIT 30;
+      `);
+    } catch (err) {
+      console.error('Error fetching waiter ranking:', err);
+    }
   }
 
+  // Mapear métricas detalladas requeridas por la capitana (Nombre, Cargo, ID, Total Vendido, Mesas, PAX, Ticket Promedio y Tira Propina 6%)
+  waiterRanking = (waiterRanking || []).map(w => {
+    const ventaTotal = Number(w.venta_total || 0);
+    const mesasAtendidas = Number(w.mesas_atendidas || 0);
+    const paxTotal = Number(w.comensales_atendidos || 0);
+    const ticketPromedioMesa = mesasAtendidas > 0 ? ventaTotal / mesasAtendidas : 0;
+    const ticketPromedioPax = paxTotal > 0 ? ventaTotal / paxTotal : 0;
+    const tiraPropina6 = ventaTotal * 0.06;
+
+    return {
+      id_mesero: String(w.id_mesero || ''),
+      nombre_mesero: String(w.nombre_mesero || `Mesero ${w.id_mesero}`),
+      cargo_puesto: String(w.cargo_puesto || 'Mesero'),
+      mesas_atendidas: mesasAtendidas,
+      pax_total: paxTotal,
+      venta_total: ventaTotal,
+      ticket_promedio_mesa: ticketPromedioMesa,
+      ticket_promedio_pax: ticketPromedioPax,
+      tira_propina_6pct: tiraPropina6,
+      propinas_registradas: Number(w.propinas_registradas || 0),
+    };
+  });
+
   try {
+    // Buscar mesas activas (priorizando cuentas sin folio o sin cierre)
     activeTables = await executeQuery(`
       SELECT 
-        c.folio,
+        COALESCE(c.folio, 0) AS folio,
         c.serie,
         c.caja,
         c.mesa,
@@ -292,22 +328,38 @@ export async function getFloorCaptainStatus() {
         c.subtotal,
         c.total,
         c.fecha_turno,
+        CAST(c.fechahora_apertura AS CHAR) AS hora_apertura,
+        CAST(c.fechahora_cierre AS CHAR) AS hora_cierre,
+        c.estado,
+        CASE 
+          WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 'ABIERTA'
+          ELSE 'CERRADA'
+        END AS estado_mesa,
         CASE 
           WHEN c.fechahora_apertura IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, c.fechahora_apertura, NOW())
           ELSE 0
         END AS minutos_abierta
       FROM cuentas c
       WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
-      ORDER BY c.folio DESC
-      LIMIT 20;
+      ORDER BY 
+        CASE WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
+        c.fechahora_apertura DESC
+      LIMIT 30;
     `);
 
-    activeTables = activeTables.map(t => ({
-      ...t,
+    activeTables = (activeTables || []).map(t => ({
+      folio: Number(t.folio || 0),
+      serie: String(t.serie || ''),
+      caja: String(t.caja || ''),
+      mesa: String(t.mesa || 'Mesa'),
+      mesero: String(t.mesero || '--'),
       personas: Number(t.personas || 0),
       subtotal: Number(t.subtotal || 0),
       total: Number(t.total || 0),
+      fecha_turno: String(t.fecha_turno || ''),
       minutos_abierta: Number(t.minutos_abierta || 0),
+      estado_mesa: String(t.estado_mesa || 'ABIERTA'),
+      es_abierta: t.estado_mesa === 'ABIERTA' || !t.folio || t.folio === 0 || !t.hora_cierre,
     }));
   } catch (e) {
     console.error('Error fetching active tables:', e);
