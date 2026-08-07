@@ -252,47 +252,28 @@ export async function getFloorCaptainStatus() {
   let activeTables: any[] = [];
 
   try {
-    // Intenta unir cuentas con el catálogo de personal si existe la tabla
+    // Consulta directa y ultrarrápida agrupada por mesero en cuentas
     waiterRanking = await executeQuery(`
       SELECT 
         c.mesero AS id_mesero,
-        COALESCE(p.nombre, CONCAT('Mesero ', c.mesero)) AS nombre_mesero,
-        COALESCE(p.puesto, 'Mesero') AS cargo_puesto,
+        CONCAT('Mesero ', c.mesero) AS nombre_mesero,
+        'Mesero' AS cargo_puesto,
         COUNT(c.mesa) AS mesas_atendidas,
         COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
         COALESCE(SUM(c.total), 0) AS venta_total,
         COALESCE(SUM(c.propina), 0) AS propinas_registradas
       FROM cuentas c
-      LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
-      WHERE c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
-      GROUP BY c.mesero, p.nombre, p.puesto
+      WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))
+        AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
+      GROUP BY c.mesero
       ORDER BY venta_total DESC
       LIMIT 30;
     `);
-  } catch (e: any) {
-    console.warn('JOIN with personal failed, falling back to direct cuentas query:', e?.message || e);
-    try {
-      waiterRanking = await executeQuery(`
-        SELECT 
-          c.mesero AS id_mesero,
-          CONCAT('Mesero ', c.mesero) AS nombre_mesero,
-          'Mesero' AS cargo_puesto,
-          COUNT(c.mesa) AS mesas_atendidas,
-          COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
-          COALESCE(SUM(c.total), 0) AS venta_total,
-          COALESCE(SUM(c.propina), 0) AS propinas_registradas
-        FROM cuentas c
-        WHERE c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)
-        GROUP BY c.mesero
-        ORDER BY venta_total DESC
-        LIMIT 30;
-      `);
-    } catch (err) {
-      console.error('Error fetching waiter ranking:', err);
-    }
+  } catch (err) {
+    console.error('Error fetching waiter ranking:', err);
   }
 
-  // Mapear métricas detalladas requeridas por la capitana (Nombre, Cargo, ID, Total Vendido, Mesas, PAX, Ticket Promedio y Tira Propina 6%)
+  // Mapear métricas detalladas requeridas por la capitana
   waiterRanking = (waiterRanking || []).map(w => {
     const ventaTotal = Number(w.venta_total || 0);
     const mesasAtendidas = Number(w.mesas_atendidas || 0);
