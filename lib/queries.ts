@@ -390,12 +390,12 @@ export async function getChefDishPopularity() {
     topDishes = await executeQuery(`
       SELECT 
         d.codigo,
-        COALESCE(a.nombre, d.codigo) AS platillo,
-        COALESCE(a.familia, 'General') AS familia,
+        COALESCE(m.nombre, d.codigo) AS platillo,
+        COALESCE(m.familia, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
       FROM cuentas_detalle d
-      LEFT JOIN articulos a ON d.codigo = a.codigo
+      LEFT JOIN menu m ON CAST(d.codigo AS CHAR) = CAST(m.codigo AS CHAR)
       GROUP BY d.codigo, platillo, familia
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
@@ -409,7 +409,7 @@ export async function getChefDishPopularity() {
       total_ventas: Number(d.total_ventas || 0),
     }));
   } catch (e) {
-    console.error('Error fetching top dishes from cuentas_detalle:', e);
+    console.error('Error fetching top dishes from menu:', e);
   }
 
   if (!topDishes || topDishes.length === 0) {
@@ -421,7 +421,7 @@ export async function getChefDishPopularity() {
           COALESCE(familia, 'General') AS familia,
           1 AS cantidad_vendida,
           0 AS total_ventas
-        FROM articulos
+        FROM menu
         LIMIT 10;
       `);
       topDishes = (topDishes || []).map(d => ({
@@ -437,11 +437,11 @@ export async function getChefDishPopularity() {
   try {
     familySummary = await executeQuery(`
       SELECT 
-        COALESCE(a.familia, 'General') AS familia,
+        COALESCE(m.familia, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS total_unidades,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_importe
       FROM cuentas_detalle d
-      LEFT JOIN articulos a ON d.codigo = a.codigo
+      LEFT JOIN menu m ON CAST(d.codigo AS CHAR) = CAST(m.codigo AS CHAR)
       GROUP BY familia
       ORDER BY total_unidades DESC
       LIMIT 10;
@@ -453,7 +453,7 @@ export async function getChefDishPopularity() {
       total_importe: Number(f.total_importe || 0),
     }));
   } catch (e) {
-    console.error('Error fetching family summary from cuentas_detalle:', e);
+    console.error('Error fetching family summary from menu:', e);
   }
 
   return {
