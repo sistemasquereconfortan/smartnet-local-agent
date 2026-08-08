@@ -1,6 +1,27 @@
 import { executeQuery } from './db';
 
 /**
+ * Helper to fetch the active shift from turno_actual.
+ * Returns the shift date, number, and box ID.
+ */
+async function getActiveShift() {
+  try {
+    const rows = await executeQuery(`SELECT caja, turno, CAST(fecha AS CHAR) AS fecha FROM turno_actual LIMIT 1;`);
+    if (rows && rows.length > 0) {
+      return {
+        caja: Number(rows[0].caja),
+        turno: Number(rows[0].turno),
+        fecha: String(rows[0].fecha || '').slice(0, 10), // YYYY-MM-DD
+        active: true
+      };
+    }
+  } catch (err) {
+    console.warn('Table turno_actual not available or query failed. Using default date filters.');
+  }
+  return { active: false, caja: 0, turno: 0, fecha: '' };
+}
+
+/**
  * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia y Tabla de Cuentas)
  * @param range 'hoy' | 'semana' | 'mes' | 'todo'
  */
@@ -11,6 +32,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
   let dailyTrend: any[] = [];
 
   // Construir la condición de fecha SQL según el rango seleccionado
+  const shift = await getActiveShift();
   let dateWhere = `WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)`;
   let trendLimit = 14;
 
@@ -23,6 +45,8 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
   } else if (range === 'todo') {
     dateWhere = `WHERE fecha_turno IS NOT NULL`;
     trendLimit = 60;
+  } else if (range === 'hoy' && shift.active) {
+    dateWhere = `WHERE fecha_turno = '${shift.fecha}' AND turno = ${shift.turno}`;
   }
 
   try {
@@ -35,7 +59,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
         COALESCE(SUM(neto), 0) AS venta_neta,
         COALESCE(SUM(iva), 0) AS total_iva,
         COALESCE(SUM(total), 0) AS venta_total,
-        COALESCE(SUM(propina), 0) AS total_propinas,
+        COALESCE(SUM(propina + pago1_propina + pago2_propina + pago3_propina), 0) AS total_propinas,
         COALESCE(SUM(cantidad_pesos), 0) AS pago_efectivo,
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
@@ -61,6 +85,157 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
     }
   } catch (e) {
     console.error('Error fetching sales summary:', e);
+  }
+
+  let paymentDistribution: any[] = [];
+  try {
+    const paymentRows = await executeQuery(`
+      SELECT 
+        sub.pago_id,
+        COALESCE(p.nombre, CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' ELSE CONCAT('Tipo ', sub.pago_id) END) AS nombre,
+        SUM(sub.cantidad) AS total
+      FROM (
+        SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_pesos > 0
+        UNION ALL
+        SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_dolares > 0
+        UNION ALL
+        SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
+        UNION ALL
+        SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+        UNION ALL
+        SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
+      ) sub
+      LEFT JOIN pagos p ON sub.pago_id = p.codigo
+      GROUP BY sub.pago_id, p.nombre
+      ORDER BY total DESC;
+    `);
+    paymentDistribution = (paymentRows || []).map(r => ({
+      pago_id: Number(r.pago_id),
+      nombre: String(r.nombre),
+      total: Number(r.total || 0),
+    }));
+  } catch (err) {
+    console.error('Error fetching payment distribution with join, attempting fallback:', err);
+    try {
+      const fallbackRows = await executeQuery(`
+        SELECT 
+          sub.pago_id,
+          CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' ELSE CONCAT('Método ', sub.pago_id) END AS nombre,
+          SUM(sub.cantidad) AS total
+        FROM (
+          SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_pesos > 0
+          UNION ALL
+          SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_dolares > 0
+          UNION ALL
+          SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
+          UNION ALL
+          SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+          UNION ALL
+          SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
+        ) sub
+        GROUP BY sub.pago_id
+        ORDER BY total DESC;
+      `);
+      paymentDistribution = (fallbackRows || []).map(r => ({
+        pago_id: Number(r.pago_id),
+        nombre: String(r.nombre),
+        total: Number(r.total || 0),
+      }));
+    } catch (fallbackErr) {
+      console.error('Fallback payment query failed:', fallbackErr);
+    }
+  }
+
+  // 1.5. Obtener gastos de caja chica del turno actual
+  let totalGastos = 0;
+  let listadoGastos: any[] = [];
+  try {
+    const filter = (range === 'hoy' && shift.active)
+      ? `WHERE fecha = '${shift.fecha}' AND turno = ${shift.turno}`
+      : `WHERE fecha = CURDATE() OR fecha = (SELECT MAX(fecha_turno) FROM cuentas)`;
+
+    const gastosSum = await executeQuery(`
+      SELECT COALESCE(SUM(importe), 0) AS total FROM gastos ${filter};
+    `);
+    totalGastos = Number(gastosSum[0]?.total || 0);
+
+    const detailRows = await executeQuery(`
+      SELECT 
+        concepto, 
+        importe, 
+        CAST(fechahora AS CHAR) AS hora
+      FROM gastos
+      ${filter}
+      ORDER BY id DESC;
+    `);
+    listadoGastos = (detailRows || []).map(g => ({
+      concepto: String(g.concepto || 'Gasto General'),
+      importe: Number(g.importe || 0),
+      hora: String(g.hora || '').slice(11, 16)
+    }));
+  } catch (err) {
+    console.error('Error fetching gastos:', err);
+  }
+
+  // 1.6. Obtener Cuentas por Cobrar (CxC)
+  let totalCargosCxC = 0;
+  let totalAbonosCxC = 0;
+  let topClientesCxC: any[] = [];
+  try {
+    const filter = (range === 'hoy' && shift.active)
+      ? `WHERE fecha = '${shift.fecha}' AND turno = ${shift.turno}`
+      : `WHERE fecha = CURDATE() OR fecha = (SELECT MAX(fecha_turno) FROM cuentas)`;
+
+    // Cargos de hoy
+    const cargosSum = await executeQuery(`
+      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_cargos ${filter};
+    `);
+    totalCargosCxC = Number(cargosSum[0]?.total || 0);
+
+    // Abonos de hoy
+    const abonosSum = await executeQuery(`
+      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_abonos ${filter};
+    `);
+    totalAbonosCxC = Number(abonosSum[0]?.total || 0);
+
+    // Top 5 clientes con adeudo activo
+    const deudores = await executeQuery(`
+      SELECT 
+        codigo, 
+        nombre, 
+        COALESCE(saldo, 0) AS saldo 
+      FROM cxc_clients 
+      WHERE COALESCE(saldo, 0) > 0 
+      ORDER BY saldo DESC 
+      LIMIT 5;
+    `);
+    topClientesCxC = (deudores || []).map(d => ({
+      codigo: Number(d.codigo),
+      nombre: String(d.nombre),
+      saldo: Number(d.saldo)
+    }));
+  } catch (err) {
+    // Intentar fallback si las tablas de cxc no están creadas o difieren
+    console.error('Error fetching CxC, attempting fallback:', err);
+    try {
+      const deudores = await executeQuery(`
+        SELECT 
+          codigo, 
+          nombre, 
+          COALESCE(saldo, 0) AS saldo 
+        FROM clientes 
+        WHERE COALESCE(saldo, 0) > 0 
+        ORDER BY saldo DESC 
+        LIMIT 5;
+      `);
+      topClientesCxC = (deudores || []).map(d => ({
+        codigo: Number(d.codigo),
+        nombre: String(d.nombre),
+        saldo: Number(d.saldo)
+      }));
+    } catch (e) {
+      console.error('CxC fallback also failed:', e);
+    }
   }
 
   try {
@@ -98,7 +273,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
         COALESCE(subtotal, 0) AS subtotal,
         COALESCE(descuento, 0) AS descuento,
         COALESCE(total, 0) AS total,
-        COALESCE(propina, 0) AS propina,
+        COALESCE(propina + pago1_propina + pago2_propina + pago3_propina, 0) AS propina,
         COALESCE(cantidad_pesos, 0) AS efectivo,
         COALESCE(pago1_cantidad + pago2_cantidad + pago3_cantidad, 0) AS tarjeta,
         COALESCE(cantidad_dolares, 0) AS dolares,
@@ -156,10 +331,18 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
   return {
     rango_seleccionado: range,
     fecha: new Date().toISOString().split('T')[0],
-    resumen_ventas: sales,
+    resumen_ventas: {
+      ...sales,
+      total_gastos: totalGastos,
+      total_cargos_cxc: totalCargosCxC,
+      total_abonos_cxc: totalAbonosCxC,
+    },
     auditoria_cancelaciones: cancellations,
     tendencia_diaria: dailyTrend,
     detalle_cuentas: accountDetails,
+    distribucion_pagos: paymentDistribution,
+    listado_gastos: listadoGastos,
+    top_clientes_cxc: topClientesCxC,
   };
 }
 
@@ -255,6 +438,7 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
   let waiterRanking: any[] = [];
   let activeTables: any[] = [];
 
+  const shift = await getActiveShift();
   // Construir la condición de fecha SQL según el rango seleccionado
   let dateWhere = `WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
 
@@ -264,6 +448,8 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
     dateWhere = `WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
   } else if (range === 'todo') {
     dateWhere = `WHERE c.fecha_turno IS NOT NULL`;
+  } else if (range === 'hoy' && shift.active) {
+    dateWhere = `WHERE c.fecha_turno = '${shift.fecha}' AND c.turno = ${shift.turno}`;
   }
 
   try {
@@ -276,7 +462,7 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
         COUNT(c.mesa) AS mesas_atendidas,
         COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
         COALESCE(SUM(c.total), 0) AS venta_total,
-        COALESCE(SUM(c.propina), 0) AS propinas_registradas
+        COALESCE(SUM(c.propina + c.pago1_propina + c.pago2_propina + c.pago3_propina), 0) AS propinas_registradas
       FROM cuentas c
       LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
       LEFT JOIN rangos r ON p.rango = r.codigo
@@ -297,7 +483,7 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
           COUNT(c.mesa) AS mesas_atendidas,
           COALESCE(SUM(c.personas), 0) AS comensales_atendidos,
           COALESCE(SUM(c.total), 0) AS venta_total,
-          COALESCE(SUM(c.propina), 0) AS propinas_registradas
+          COALESCE(SUM(c.propina + c.pago1_propina + c.pago2_propina + c.pago3_propina), 0) AS propinas_registradas
         FROM cuentas c
         ${dateWhere}
           AND c.mesero IS NOT NULL AND c.mesero != '' AND c.mesero != '0'
