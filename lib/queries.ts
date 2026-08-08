@@ -732,7 +732,7 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
         END AS minutos_abierta
       FROM cuentas c
       LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
-      \${dateWhere}
+      ${dateWhere}
       ORDER BY 
         CASE WHEN c.estado IN (1, 2) OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
         c.fechahora_apertura DESC
