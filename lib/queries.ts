@@ -21,32 +21,47 @@ async function getActiveShift() {
   return { active: false, caja: 0, turno: 0, fecha: '' };
 }
 
-/**
- * ADMINISTRADOR: Auditoría pura (Ventas, Propinas, Descuentos, Cancelaciones, Formas de Pago, Tendencia y Tabla de Cuentas)
- * @param range 'hoy' | 'semana' | 'mes' | 'todo'
- */
-export async function getAdminAuditSummary(range: string = 'hoy') {
+export async function getAdminAuditSummary(range: string = 'hoy', startDate?: string, endDate?: string, shiftNumber?: number) {
   let sales: any = {};
   let cancellations: any = { total_cancelaciones: 0, monto_cancelado: 0 };
   let accountDetails: any[] = [];
   let dailyTrend: any[] = [];
 
-  // Construir la condición de fecha SQL según el rango seleccionado
+  // Construir la condición de fecha SQL según el rango seleccionado o los inputs de búsqueda
   const shift = await getActiveShift();
-  let dateWhere = `WHERE fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)`;
+  let dateWhere = `WHERE (fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
+  let dateFilter = `WHERE (fecha = CURDATE() OR fecha = (SELECT MAX(fecha_turno) FROM cuentas))`;
+  let bitacoraFilter = `WHERE (DATE(b.fechaHora) = CURDATE() OR DATE(b.fechaHora) = (SELECT MAX(fecha_turno) FROM cuentas))`;
   let trendLimit = 14;
 
-  if (range === 'semana') {
+  if (startDate && endDate) {
+    dateWhere = `WHERE fecha_turno BETWEEN '${startDate}' AND '${endDate}'`;
+    dateFilter = `WHERE fecha BETWEEN '${startDate}' AND '${endDate}'`;
+    bitacoraFilter = `WHERE DATE(b.fechaHora) BETWEEN '${startDate}' AND '${endDate}'`;
+    if (shiftNumber) {
+      dateWhere += ` AND turno = ${shiftNumber}`;
+      dateFilter += ` AND turno = ${shiftNumber}`;
+    }
+    trendLimit = 100;
+  } else if (range === 'semana') {
     dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+    dateFilter = `WHERE fecha >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+    bitacoraFilter = `WHERE b.fechaHora >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
     trendLimit = 7;
   } else if (range === 'mes') {
     dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+    dateFilter = `WHERE fecha >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+    bitacoraFilter = `WHERE b.fechaHora >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
     trendLimit = 30;
   } else if (range === 'todo') {
     dateWhere = `WHERE fecha_turno IS NOT NULL`;
+    dateFilter = `WHERE fecha IS NOT NULL`;
+    bitacoraFilter = `WHERE b.fechaHora IS NOT NULL`;
     trendLimit = 60;
   } else if (range === 'hoy' && shift.active) {
     dateWhere = `WHERE fecha_turno = '${shift.fecha}' AND turno = ${shift.turno}`;
+    dateFilter = `WHERE fecha = '${shift.fecha}' AND turno = ${shift.turno}`;
+    bitacoraFilter = `WHERE DATE(b.fechaHora) = '${shift.fecha}'`;
   }
 
   try {
@@ -146,16 +161,12 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
     }
   }
 
-  // 1.5. Obtener gastos de caja chica del turno actual
+  // 1.5. Obtener gastos de caja chica del turno actual o rango seleccionado
   let totalGastos = 0;
   let listadoGastos: any[] = [];
   try {
-    const filter = (range === 'hoy' && shift.active)
-      ? `WHERE fecha = '${shift.fecha}' AND turno = ${shift.turno}`
-      : `WHERE fecha = CURDATE() OR fecha = (SELECT MAX(fecha_turno) FROM cuentas)`;
-
     const gastosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM gastos ${filter};
+      SELECT COALESCE(SUM(importe), 0) AS total FROM gastos ${dateFilter};
     `);
     totalGastos = Number(gastosSum[0]?.total || 0);
 
@@ -165,7 +176,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
         importe, 
         CAST(fechahora AS CHAR) AS hora
       FROM gastos
-      ${filter}
+      ${dateFilter}
       ORDER BY id DESC;
     `);
     listadoGastos = (detailRows || []).map(g => ({
@@ -182,23 +193,19 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
   let totalAbonosCxC = 0;
   let topClientesCxC: any[] = [];
   try {
-    const filter = (range === 'hoy' && shift.active)
-      ? `WHERE fecha = '${shift.fecha}' AND turno = ${shift.turno}`
-      : `WHERE fecha = CURDATE() OR fecha = (SELECT MAX(fecha_turno) FROM cuentas)`;
-
-    // Cargos de hoy
+    // Cargos
     const cargosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_cargos ${filter};
+      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_cargos ${dateFilter};
     `);
     totalCargosCxC = Number(cargosSum[0]?.total || 0);
 
-    // Abonos de hoy
+    // Abonos
     const abonosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_abonos ${filter};
+      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_abonos ${dateFilter};
     `);
     totalAbonosCxC = Number(abonosSum[0]?.total || 0);
 
-    // Top 5 clientes con adeudo activo
+    // Top 5 deudores
     const deudores = await executeQuery(`
       SELECT 
         codigo, 
@@ -215,7 +222,6 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
       saldo: Number(d.saldo)
     }));
   } catch (err) {
-    // Intentar fallback si las tablas de cxc no están creadas o difieren
     console.error('Error fetching CxC, attempting fallback:', err);
     try {
       const deudores = await executeQuery(`
@@ -234,7 +240,32 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
         saldo: Number(d.saldo)
       }));
     } catch (e) {
-      console.error('CxC fallback also failed:', e);
+      console.error('CxC fallback failed:', e);
+    }
+  }
+
+  // 1.7. Obtener Ventas por Hora (solo si es un reporte diario)
+  let hourlySales: any[] = [];
+  const isDaily = range === 'hoy' || (startDate && startDate === endDate);
+  if (isDaily) {
+    try {
+      const hourlyRows = await executeQuery(`
+        SELECT 
+          HOUR(COALESCE(fechahora_apertura, fechahora_cierre)) AS hora,
+          COALESCE(SUM(total), 0) AS total,
+          COUNT(*) AS total_cuentas
+        FROM cuentas
+        ${dateWhere}
+        GROUP BY HOUR(COALESCE(fechahora_apertura, fechahora_cierre))
+        ORDER BY hora ASC;
+      `);
+      hourlySales = (hourlyRows || []).map(h => ({
+        hora: `${String(h.hora).padStart(2, '0')}:00`,
+        total: Number(h.total || 0),
+        total_cuentas: Number(h.total_cuentas || 0),
+      }));
+    } catch (e) {
+      console.error('Error fetching hourly sales:', e);
     }
   }
 
@@ -313,9 +344,10 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
     const cancRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cancelaciones,
-        0 AS monto_cancelado
-      FROM bitacora_cuenta
-      WHERE (descripcionTipo LIKE '%cancel%' OR descripcionTipo LIKE '%borra%');
+        COALESCE(SUM(c.total), 0) AS monto_cancelado
+      FROM bitacora_cuenta b
+      LEFT JOIN cuentas c ON b.idCuenta = c.guid
+      ${bitacoraFilter} AND (b.descripcionTipo LIKE '%cancel%' OR b.descripcionTipo LIKE '%borra%' OR b.comentario LIKE '%cancel%' OR b.comentario LIKE '%borra%');
     `);
     const cancRow = cancRows && cancRows.length > 0 ? cancRows[0] : null;
     if (cancRow) {
@@ -343,6 +375,7 @@ export async function getAdminAuditSummary(range: string = 'hoy') {
     distribucion_pagos: paymentDistribution,
     listado_gastos: listadoGastos,
     top_clientes_cxc: topClientesCxC,
+    ventas_por_hora: hourlySales,
   };
 }
 

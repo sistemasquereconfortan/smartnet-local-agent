@@ -7,9 +7,13 @@ export async function GET(request: NextRequest) {
   if (!auth.valid) return auth.response!;
 
   const range = request.nextUrl.searchParams.get('range') || 'hoy';
+  const startDate = request.nextUrl.searchParams.get('startDate') || undefined;
+  const endDate = request.nextUrl.searchParams.get('endDate') || undefined;
+  const shiftVal = request.nextUrl.searchParams.get('turno') || undefined;
+  const shiftNumber = shiftVal ? Number(shiftVal) : undefined;
 
   try {
-    const data = await getAdminAuditSummary(range);
+    const data = await getAdminAuditSummary(range, startDate, endDate, shiftNumber);
     return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json(
