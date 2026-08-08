@@ -382,26 +382,46 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
 /**
  * CHEF: Popularidad de Platillos y Familias de Alimentos (Detalle Real de Comanda)
  */
-export async function getChefDishPopularity() {
+export async function getChefDishPopularity(range: string = 'hoy', startDate?: string, endDate?: string) {
   let topDishes: any[] = [];
   let familySummary: any[] = [];
+
+  const shift = await getActiveShift();
+  let dateWhere = `WHERE (fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
+
+  if (startDate && endDate) {
+    dateWhere = `WHERE fecha_turno BETWEEN '${startDate}' AND '${endDate}'`;
+  } else if (range === 'semana') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+  } else if (range === 'mes') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+  } else if (range === 'año') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)`;
+  } else if (range === 'todo') {
+    dateWhere = `WHERE fecha_turno IS NOT NULL`;
+  } else if (range === 'hoy' && shift.active) {
+    dateWhere = `WHERE fecha_turno = '${shift.fecha}' AND turno = ${shift.turno}`;
+  }
 
   try {
     topDishes = await executeQuery(`
       SELECT 
         d.codigo,
         COALESCE(m.nombre, d.codigo) AS platillo,
-        COALESCE(m.familia, 0) AS familia,
+        COALESCE(fp.nombre, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
-        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
+        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas,
+        COALESCE(fp.es_alimentos, 0) AS es_alimentos,
+        COALESCE(fp.es_bebidas, 0) AS es_bebidas
       FROM cuentas c
       INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
       LEFT JOIN menu m ON d.codigo = m.codigo
-      WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      LEFT JOIN familias_platillos fp ON m.familia = fp.codigo
+      ${dateWhere}
         AND (m.es_adicional = 0 OR m.es_adicional IS NULL)
-      GROUP BY d.codigo, platillo, familia
+      GROUP BY d.codigo, platillo, familia, fp.es_alimentos, fp.es_bebidas
       ORDER BY cantidad_vendida DESC
-      LIMIT 10;
+      LIMIT 300;
     `);
 
     topDishes = (topDishes || []).map(d => ({
@@ -410,6 +430,8 @@ export async function getChefDishPopularity() {
       familia: String(d.familia || 'General'),
       cantidad_vendida: Number(d.cantidad_vendida || 0),
       total_ventas: Number(d.total_ventas || 0),
+      es_alimentos: Number(d.es_alimentos || 0),
+      es_bebidas: Number(d.es_bebidas || 0),
     }));
   } catch (e) {
     console.error('Error fetching top dishes from menu:', e);
@@ -419,19 +441,24 @@ export async function getChefDishPopularity() {
     try {
       topDishes = await executeQuery(`
         SELECT 
-          codigo,
-          nombre AS platillo,
-          COALESCE(familia, 0) AS familia,
+          m.codigo,
+          m.nombre AS platillo,
+          COALESCE(fp.nombre, 'General') AS familia,
           1 AS cantidad_vendida,
-          0 AS total_ventas
-        FROM menu
-        WHERE es_adicional = 0
-        LIMIT 10;
+          0 AS total_ventas,
+          COALESCE(fp.es_alimentos, 0) AS es_alimentos,
+          COALESCE(fp.es_bebidas, 0) AS es_bebidas
+        FROM menu m
+        LEFT JOIN familias_platillos fp ON m.familia = fp.codigo
+        WHERE m.es_adicional = 0
+        LIMIT 30;
       `);
       topDishes = (topDishes || []).map(d => ({
         ...d,
         cantidad_vendida: Number(d.cantidad_vendida || 0),
         total_ventas: Number(d.total_ventas || 0),
+        es_alimentos: Number(d.es_alimentos || 0),
+        es_bebidas: Number(d.es_bebidas || 0),
       }));
     } catch (err) {
       console.error('Fallback query error:', err);
@@ -441,17 +468,18 @@ export async function getChefDishPopularity() {
   try {
     familySummary = await executeQuery(`
       SELECT 
-        COALESCE(m.familia, 0) AS familia,
+        COALESCE(fp.nombre, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS total_unidades,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_importe
       FROM cuentas c
       INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
       LEFT JOIN menu m ON d.codigo = m.codigo
-      WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      LEFT JOIN familias_platillos fp ON m.familia = fp.codigo
+      ${dateWhere}
         AND (m.es_adicional = 0 OR m.es_adicional IS NULL)
       GROUP BY familia
       ORDER BY total_unidades DESC
-      LIMIT 10;
+      LIMIT 15;
     `);
 
     familySummary = (familySummary || []).map(f => ({
@@ -467,6 +495,113 @@ export async function getChefDishPopularity() {
     fecha: new Date().toISOString().split('T')[0],
     top_10_platillos: topDishes,
     ventas_por_familia: familySummary,
+  };
+}
+
+/**
+ * CHEF: Obtiene el desglose detallado de ventas por mesero para un platillo específico
+ */
+export async function getChefDishDetail(codigo: string, range: string = 'hoy', startDate?: string, endDate?: string) {
+  const shift = await getActiveShift();
+  let dateWhere = `WHERE (fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
+
+  if (startDate && endDate) {
+    dateWhere = `WHERE fecha_turno BETWEEN '${startDate}' AND '${endDate}'`;
+  } else if (range === 'semana') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
+  } else if (range === 'mes') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;
+  } else if (range === 'año') {
+    dateWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)`;
+  } else if (range === 'todo') {
+    dateWhere = `WHERE fecha_turno IS NOT NULL`;
+  } else if (range === 'hoy' && shift.active) {
+    dateWhere = `WHERE fecha_turno = '${shift.fecha}' AND turno = ${shift.turno}`;
+  }
+
+  // 1. Obtener información básica y resumen de ventas del platillo
+  let dishInfo: any = null;
+  try {
+    const rows = await executeQuery(`
+      SELECT 
+        d.codigo,
+        COALESCE(m.nombre, d.codigo) AS platillo,
+        COALESCE(fp.nombre, 'General') AS familia,
+        SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
+        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
+      FROM cuentas c
+      INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      LEFT JOIN menu m ON d.codigo = m.codigo
+      LEFT JOIN familias_platillos fp ON m.familia = fp.codigo
+      ${dateWhere}
+        AND d.codigo = ?
+      GROUP BY d.codigo, platillo, familia;
+    `, [codigo]);
+
+    if (rows && rows.length > 0) {
+      dishInfo = {
+        codigo: String(rows[0].codigo || ''),
+        platillo: String(rows[0].platillo || ''),
+        familia: String(rows[0].familia || ''),
+        cantidad_vendida: Number(rows[0].cantidad_vendida || 0),
+        total_ventas: Number(rows[0].total_ventas || 0),
+      };
+    } else {
+      // Si no hay ventas, buscar datos generales en el catálogo de menú
+      const menuRows = await executeQuery(`
+        SELECT 
+          m.codigo,
+          m.nombre AS platillo,
+          COALESCE(fp.nombre, 'General') AS familia
+        FROM menu m
+        LEFT JOIN familias_platillos fp ON m.familia = fp.codigo
+        WHERE m.codigo = ?;
+      `, [codigo]);
+      if (menuRows && menuRows.length > 0) {
+        dishInfo = {
+          codigo: String(menuRows[0].codigo || ''),
+          platillo: String(menuRows[0].platillo || ''),
+          familia: String(menuRows[0].familia || ''),
+          cantidad_vendida: 0,
+          total_ventas: 0,
+        };
+      }
+    }
+  } catch (e) {
+    console.error('Error fetching dish detail info:', e);
+  }
+
+  // 2. Obtener desglose por meseros
+  let waiterBreakdown: any[] = [];
+  try {
+    const rows = await executeQuery(`
+      SELECT 
+        c.mesero AS id_mesero,
+        COALESCE(p.nombre, CONCAT('Mesero ', CAST(c.mesero AS CHAR))) AS nombre_mesero,
+        SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
+        SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
+      FROM cuentas c
+      INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
+      ${dateWhere}
+        AND d.codigo = ?
+      GROUP BY c.mesero, p.nombre
+      ORDER BY cantidad_vendida DESC;
+    `, [codigo]);
+
+    waiterBreakdown = (rows || []).map((w: any) => ({
+      id_mesero: Number(w.id_mesero || 0),
+      nombre_mesero: String(w.nombre_mesero || ''),
+      cantidad_vendida: Number(w.cantidad_vendida || 0),
+      total_ventas: Number(w.total_ventas || 0),
+    }));
+  } catch (e) {
+    console.error('Error fetching waiter breakdown for dish:', e);
+  }
+
+  return {
+    dish: dishInfo || { codigo, platillo: 'Platillo', familia: 'General', cantidad_vendida: 0, total_ventas: 0 },
+    ventas_por_mesero: waiterBreakdown,
   };
 }
 
