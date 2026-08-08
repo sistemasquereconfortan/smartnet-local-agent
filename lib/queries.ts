@@ -713,14 +713,18 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
         COALESCE(p.nombre, CONCAT('Mesero ', CAST(c.mesero AS CHAR))) AS nombre_mesero,
         c.personas,
         c.subtotal,
+        COALESCE(c.descuento, 0) AS descuento,
         c.total,
         c.fecha_turno,
         CAST(c.fechahora_apertura AS CHAR) AS hora_apertura,
         CAST(c.fechahora_cierre AS CHAR) AS hora_cierre,
         c.estado,
         CASE 
-          WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 'ABIERTA'
-          ELSE 'CERRADA'
+          WHEN c.estado = 1 THEN 'ABIERTA'
+          WHEN c.estado = 2 THEN 'PRECUENTA'
+          WHEN c.estado = 3 THEN 'CERRADA'
+          WHEN c.estado = 4 THEN 'CANCELADA'
+          ELSE 'ABIERTA'
         END AS estado_mesa,
         CASE 
           WHEN c.fechahora_apertura IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, c.fechahora_apertura, NOW())
@@ -728,9 +732,9 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
         END AS minutos_abierta
       FROM cuentas c
       LEFT JOIN personal p ON CAST(c.mesero AS CHAR) = CAST(p.codigo AS CHAR)
-      ${dateWhere}
+      \${dateWhere}
       ORDER BY 
-        CASE WHEN c.folio IS NULL OR c.folio = 0 OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
+        CASE WHEN c.estado IN (1, 2) OR c.fechahora_cierre IS NULL THEN 0 ELSE 1 END ASC,
         c.fechahora_apertura DESC
       LIMIT 30;
     `);
@@ -743,11 +747,12 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
       mesero: String(t.nombre_mesero || t.mesero || '--'),
       personas: Number(t.personas || 0),
       subtotal: Number(t.subtotal || 0),
+      descuento: Number(t.descuento || 0),
       total: Number(t.total || 0),
       fecha_turno: String(t.fecha_turno || ''),
       minutos_abierta: Number(t.minutos_abierta || 0),
       estado_mesa: String(t.estado_mesa || 'ABIERTA'),
-      es_abierta: t.estado_mesa === 'ABIERTA' || !t.folio || t.folio === 0 || !t.hora_cierre,
+      es_abierta: t.estado_mesa === 'ABIERTA' || t.estado_mesa === 'PRECUENTA' || !t.folio || t.folio === 0 || !t.hora_cierre,
     }));
   } catch (e) {
     console.error('Error fetching active tables:', e);
