@@ -391,13 +391,14 @@ export async function getChefDishPopularity() {
       SELECT 
         d.codigo,
         COALESCE(m.nombre, d.codigo) AS platillo,
-        COALESCE(m.familia, 'General') AS familia,
+        COALESCE(m.familia, 0) AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
       FROM cuentas c
       INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
       LEFT JOIN menu m ON d.codigo = m.codigo
       WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND (m.es_adicional = 0 OR m.es_adicional IS NULL)
       GROUP BY d.codigo, platillo, familia
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
@@ -420,10 +421,11 @@ export async function getChefDishPopularity() {
         SELECT 
           codigo,
           nombre AS platillo,
-          COALESCE(familia, 'General') AS familia,
+          COALESCE(familia, 0) AS familia,
           1 AS cantidad_vendida,
           0 AS total_ventas
         FROM menu
+        WHERE es_adicional = 0
         LIMIT 10;
       `);
       topDishes = (topDishes || []).map(d => ({
@@ -439,13 +441,14 @@ export async function getChefDishPopularity() {
   try {
     familySummary = await executeQuery(`
       SELECT 
-        COALESCE(m.familia, 'General') AS familia,
+        COALESCE(m.familia, 0) AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS total_unidades,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_importe
       FROM cuentas c
       INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
       LEFT JOIN menu m ON d.codigo = m.codigo
       WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND (m.es_adicional = 0 OR m.es_adicional IS NULL)
       GROUP BY familia
       ORDER BY total_unidades DESC
       LIMIT 10;
