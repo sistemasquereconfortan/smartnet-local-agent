@@ -394,8 +394,10 @@ export async function getChefDishPopularity() {
         COALESCE(m.familia, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS cantidad_vendida,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_ventas
-      FROM cuentas_detalle d
-      LEFT JOIN menu m ON CAST(d.codigo AS CHAR) = CAST(m.codigo AS CHAR)
+      FROM cuentas c
+      INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      LEFT JOIN menu m ON d.codigo = m.codigo
+      WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
       GROUP BY d.codigo, platillo, familia
       ORDER BY cantidad_vendida DESC
       LIMIT 10;
@@ -440,8 +442,10 @@ export async function getChefDishPopularity() {
         COALESCE(m.familia, 'General') AS familia,
         SUM(COALESCE(d.cantidad, 1)) AS total_unidades,
         SUM(COALESCE(d.precio * d.cantidad, d.precio, 0)) AS total_importe
-      FROM cuentas_detalle d
-      LEFT JOIN menu m ON CAST(d.codigo AS CHAR) = CAST(m.codigo AS CHAR)
+      FROM cuentas c
+      INNER JOIN cuentas_detalle d ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      LEFT JOIN menu m ON d.codigo = m.codigo
+      WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
       GROUP BY familia
       ORDER BY total_unidades DESC
       LIMIT 10;
