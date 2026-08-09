@@ -609,7 +609,7 @@ export async function getChefDishDetail(codigo: string, range: string = 'hoy', s
  * CAPITANA DE PISO: Productividad Humana y Rendimiento Detallado por Mesero
  * @param range 'hoy' | 'semana' | 'mes' | 'todo'
  */
-export async function getFloorCaptainStatus(range: string = 'hoy') {
+export async function getFloorCaptainStatus(range: string = 'hoy', startDate?: string, endDate?: string) {
   let waiterRanking: any[] = [];
   let activeTables: any[] = [];
 
@@ -617,7 +617,9 @@ export async function getFloorCaptainStatus(range: string = 'hoy') {
   // Construir la condición de fecha SQL según el rango seleccionado
   let dateWhere = `WHERE (c.fecha_turno = CURDATE() OR c.fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas))`;
 
-  if (range === 'semana') {
+  if (startDate && endDate) {
+    dateWhere = `WHERE c.fecha_turno BETWEEN '${startDate}' AND '${endDate}'`;
+  } else if (range === 'semana') {
     dateWhere = `WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`;
   } else if (range === 'mes') {
     dateWhere = `WHERE c.fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`;

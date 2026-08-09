@@ -8,7 +8,9 @@ export async function GET(request: NextRequest) {
 
   try {
     const range = request.nextUrl.searchParams.get('range') || 'hoy';
-    const data = await getFloorCaptainStatus(range);
+    const startDate = request.nextUrl.searchParams.get('startDate') || undefined;
+    const endDate = request.nextUrl.searchParams.get('endDate') || undefined;
+    const data = await getFloorCaptainStatus(range, startDate, endDate);
     return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json(
