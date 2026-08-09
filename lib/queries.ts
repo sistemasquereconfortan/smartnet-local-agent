@@ -88,7 +88,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         ), 0) AS total_cortesias,
         COALESCE(SUM(cargo_cxc), 0) AS total_cxc
       FROM cuentas
-      \${dateWhere};
+      ${dateWhere};
     `);
 
     const salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
