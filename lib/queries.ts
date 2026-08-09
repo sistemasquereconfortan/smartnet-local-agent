@@ -222,56 +222,107 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
   let totalCargosCxC = 0;
   let totalAbonosCxC = 0;
   let topClientesCxC: any[] = [];
+  let detalleCargos: any[] = [];
+  let detalleAbonos: any[] = [];
   try {
-    // Cargos
+    // Build CxC date filter using fecha_turno (same logic as dateWhere but for cxc tables)
+    let cxcWhere = `WHERE (fecha_turno = CURDATE() OR fecha_turno = (SELECT MAX(fecha_turno) FROM cuentas)) AND cancelado = 0`;
+    if (startDate && endDate) {
+      cxcWhere = `WHERE fecha_turno BETWEEN '${startDate}' AND '${endDate}' AND cancelado = 0`;
+      if (shiftNumber) cxcWhere += ` AND turno = ${shiftNumber}`;
+    } else if (range === 'semana') {
+      cxcWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND cancelado = 0`;
+    } else if (range === 'mes') {
+      cxcWhere = `WHERE fecha_turno >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND cancelado = 0`;
+    } else if (range === 'todo') {
+      cxcWhere = `WHERE cancelado = 0`;
+    } else if (range === 'hoy' && shift.active) {
+      cxcWhere = `WHERE fecha_turno = '${shift.fecha}' AND turno = ${shift.turno} AND cancelado = 0`;
+    }
+
+    // Total cargos en el periodo
     const cargosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_cargos ${dateFilter};
+      SELECT COALESCE(SUM(cargo), 0) AS total, COUNT(*) AS cnt
+      FROM cxc_cargos ${cxcWhere};
     `);
     totalCargosCxC = Number(cargosSum[0]?.total || 0);
 
-    // Abonos
+    // Total abonos en el periodo
     const abonosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM cxc_abonos ${dateFilter};
+      SELECT COALESCE(SUM(abono), 0) AS total, COUNT(*) AS cnt
+      FROM cxc_abonos ${cxcWhere};
     `);
     totalAbonosCxC = Number(abonosSum[0]?.total || 0);
 
-    // Top 5 deudores
+    // Top 5 clientes con mayor saldo pendiente (acumulado total, no filtrado por fecha)
     const deudores = await executeQuery(`
-      SELECT 
-        codigo, 
-        nombre, 
-        COALESCE(saldo, 0) AS saldo 
-      FROM cxc_clients 
-      WHERE COALESCE(saldo, 0) > 0 
-      ORDER BY saldo DESC 
+      SELECT
+        cl.codigo,
+        cl.nombre,
+        COALESCE((SELECT SUM(ca.cargo) FROM cxc_cargos ca WHERE ca.cliente = cl.codigo AND ca.cancelado = 0), 0)
+        - COALESCE((SELECT SUM(ab.abono) FROM cxc_abonos ab WHERE ab.cliente = cl.codigo AND ab.cancelado = 0), 0)
+        AS saldo
+      FROM cxc_clientes cl
+      HAVING saldo > 0.01
+      ORDER BY saldo DESC
       LIMIT 5;
     `);
-    topClientesCxC = (deudores || []).map(d => ({
+    topClientesCxC = (deudores || []).map((d: any) => ({
       codigo: Number(d.codigo),
       nombre: String(d.nombre),
-      saldo: Number(d.saldo)
+      saldo: Number(d.saldo || 0),
     }));
+
+    // Detalle de cargos del periodo (con nombre de cliente)
+    const cargosDetail = await executeQuery(`
+      SELECT
+        cc.folio,
+        COALESCE(cl.nombre, CONCAT('Cliente ', cc.cliente)) AS cliente_nombre,
+        cc.cargo,
+        cc.concepto,
+        CAST(cc.fecha_turno AS CHAR) AS fecha_turno,
+        cc.turno
+      FROM cxc_cargos cc
+      LEFT JOIN cxc_clientes cl ON cl.codigo = cc.cliente
+      ${cxcWhere}
+      ORDER BY cc.folio DESC
+      LIMIT 30;
+    `);
+    detalleCargos = (cargosDetail || []).map((r: any) => ({
+      folio: Number(r.folio),
+      cliente: String(r.cliente_nombre),
+      cargo: Number(r.cargo || 0),
+      concepto: String(r.concepto || ''),
+      fecha: String(r.fecha_turno || '').slice(0, 10),
+      turno: Number(r.turno || 0),
+    }));
+
+    // Detalle de abonos del periodo (con nombre de cliente)
+    const abonosDetail = await executeQuery(`
+      SELECT
+        ab.folio,
+        COALESCE(cl.nombre, CONCAT('Cliente ', ab.cliente)) AS cliente_nombre,
+        ab.abono,
+        ab.concepto,
+        CAST(ab.fecha_turno AS CHAR) AS fecha_turno,
+        ab.turno
+      FROM cxc_abonos ab
+      LEFT JOIN cxc_clientes cl ON cl.codigo = ab.cliente
+      ${cxcWhere}
+      ORDER BY ab.folio DESC
+      LIMIT 30;
+    `);
+    detalleAbonos = (abonosDetail || []).map((r: any) => ({
+      folio: Number(r.folio),
+      cliente: String(r.cliente_nombre),
+      abono: Number(r.abono || 0),
+      concepto: String(r.concepto || ''),
+      fecha: String(r.fecha_turno || '').slice(0, 10),
+      turno: Number(r.turno || 0),
+    }));
+
   } catch (err) {
-    console.error('Error fetching CxC, attempting fallback:', err);
-    try {
-      const deudores = await executeQuery(`
-        SELECT 
-          codigo, 
-          nombre, 
-          COALESCE(saldo, 0) AS saldo 
-        FROM clientes 
-        WHERE COALESCE(saldo, 0) > 0 
-        ORDER BY saldo DESC 
-        LIMIT 5;
-      `);
-      topClientesCxC = (deudores || []).map(d => ({
-        codigo: Number(d.codigo),
-        nombre: String(d.nombre),
-        saldo: Number(d.saldo)
-      }));
-    } catch (e) {
-      console.error('CxC fallback failed:', e);
-    }
+    console.error('Error fetching CxC data:', err);
   }
 
   // 1.7. Obtener Ventas por Hora (solo si es un reporte diario)
@@ -405,6 +456,8 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     distribucion_pagos: paymentDistribution,
     listado_gastos: listadoGastos,
     top_clientes_cxc: topClientesCxC,
+    detalle_cargos_cxc: detalleCargos,
+    detalle_abonos_cxc: detalleAbonos,
     ventas_por_hora: hourlySales,
   };
 }
