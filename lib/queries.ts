@@ -421,6 +421,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     console.error('Error fetching account details:', e);
   }
 
+  let detalleCancelaciones: any[] = [];
   try {
     const cancRows = await executeQuery(`
       SELECT 
@@ -437,6 +438,37 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         monto_cancelado: Number(cancRow.monto_cancelado || 0),
       };
     }
+
+    // Detail per cancelled item
+    const cancDetailRows = await executeQuery(`
+      SELECT
+        COALESCE(m.nombre, CONCAT('Código ', d.codigo)) AS platillo,
+        ABS(d.cantidad) AS cantidad,
+        d.precio,
+        ABS(d.cantidad) * d.precio AS importe,
+        d.comentario AS motivo,
+        CAST(d.fechahora_movimiento AS CHAR) AS fecha_hora,
+        c.mesa,
+        c.turno,
+        CAST(c.fecha_turno AS CHAR) AS fecha_turno
+      FROM cuentas_detalle d
+      INNER JOIN cuentas c ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      LEFT JOIN menu m ON m.codigo = d.codigo
+      ${dateWhere} AND d.cantidad < 0
+      ORDER BY d.fechahora_movimiento DESC
+      LIMIT 100;
+    `);
+    detalleCancelaciones = (cancDetailRows || []).map((r: any) => ({
+      platillo: String(r.platillo || 'Artículo'),
+      cantidad: Number(r.cantidad || 0),
+      precio: Number(r.precio || 0),
+      importe: Number(r.importe || 0),
+      motivo: String(r.motivo || ''),
+      fecha_hora: String(r.fecha_hora || '').slice(0, 16),
+      mesa: String(r.mesa || ''),
+      turno: Number(r.turno || 0),
+      fecha: String(r.fecha_turno || '').slice(0, 10),
+    }));
   } catch (e) {
     console.error('Error fetching cancellations:', e);
   }
@@ -451,6 +483,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
       total_abonos_cxc: totalAbonosCxC,
     },
     auditoria_cancelaciones: cancellations,
+    detalle_cancelaciones: detalleCancelaciones,
     tendencia_diaria: dailyTrend,
     detalle_cuentas: accountDetails,
     distribucion_pagos: paymentDistribution,
