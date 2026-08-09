@@ -366,10 +366,10 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     const cancRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cancelaciones,
-        COALESCE(SUM(c.total), 0) AS monto_cancelado
-      FROM bitacora_cuenta b
-      LEFT JOIN cuentas c ON b.idCuenta = c.guid
-      ${bitacoraFilter} AND (b.descripcionTipo LIKE '%cancel%' OR b.descripcionTipo LIKE '%borra%' OR b.comentario LIKE '%cancel%' OR b.comentario LIKE '%borra%');
+        COALESCE(SUM(ABS(d.cantidad) * d.precio), 0) AS monto_cancelado
+      FROM cuentas_detalle d
+      INNER JOIN cuentas c ON c.caja = d.caja AND c.folio = d.folio AND c.serie = d.serie
+      ${dateWhere} AND d.cantidad < 0;
     `);
     const cancRow = cancRows && cancRows.length > 0 ? cancRows[0] : null;
     if (cancRow) {
