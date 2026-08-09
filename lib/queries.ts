@@ -196,16 +196,24 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
       SELECT 
         concepto, 
         cantidad, 
-        CAST(fechahora AS CHAR) AS hora
+        CAST(fechahora AS CHAR) AS fechahora,
+        CAST(fecha AS CHAR) AS fecha
       FROM gastos
       ${dateFilter}
       ORDER BY folio DESC;
     `);
-    listadoGastos = (detailRows || []).map(g => ({
-      concepto: String(g.concepto || 'Gasto General'),
-      importe: Number(g.cantidad || 0),
-      hora: String(g.hora || '').slice(11, 16)
-    }));
+    listadoGastos = (detailRows || []).map(g => {
+      const fullStr = String(g.fechahora || '');
+      const rawDate = String(g.fecha || fullStr.slice(0, 10) || '');
+      const datePart = rawDate.length >= 10 ? rawDate.slice(0, 10) : rawDate;
+      const timePart = fullStr.length >= 16 ? fullStr.slice(11, 16) : '';
+      return {
+        concepto: String(g.concepto || 'Gasto General'),
+        importe: Number(g.cantidad || 0),
+        hora: timePart || '--:--',
+        fecha: datePart,
+      };
+    });
   } catch (err) {
     console.error('Error fetching gastos:', err);
   }
