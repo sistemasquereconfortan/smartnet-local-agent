@@ -188,22 +188,22 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
   let listadoGastos: any[] = [];
   try {
     const gastosSum = await executeQuery(`
-      SELECT COALESCE(SUM(importe), 0) AS total FROM gastos ${dateFilter};
+      SELECT COALESCE(SUM(cantidad), 0) AS total FROM gastos ${dateFilter};
     `);
     totalGastos = Number(gastosSum[0]?.total || 0);
 
     const detailRows = await executeQuery(`
       SELECT 
         concepto, 
-        importe, 
+        cantidad, 
         CAST(fechahora AS CHAR) AS hora
       FROM gastos
       ${dateFilter}
-      ORDER BY id DESC;
+      ORDER BY folio DESC;
     `);
     listadoGastos = (detailRows || []).map(g => ({
       concepto: String(g.concepto || 'Gasto General'),
-      importe: Number(g.importe || 0),
+      importe: Number(g.cantidad || 0),
       hora: String(g.hora || '').slice(11, 16)
     }));
   } catch (err) {
