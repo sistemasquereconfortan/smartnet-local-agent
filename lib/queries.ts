@@ -77,7 +77,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         COALESCE(SUM(neto), 0) AS venta_neta,
         COALESCE(SUM(iva), 0) AS total_iva,
         COALESCE(SUM(total), 0) AS venta_total,
-        COALESCE(SUM(propina + pago1_propina + pago2_propina + pago3_propina), 0) AS total_propinas,
+        COALESCE(SUM(pago1_propina + pago2_propina + pago3_propina), 0) AS total_propinas,
         COALESCE(SUM(cantidad_pesos), 0) AS pago_efectivo,
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
         COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares,
