@@ -122,7 +122,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
       SELECT 
         sub.pago_id,
         COALESCE(p.nombre, CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' WHEN sub.pago_id = -2 THEN 'CXC' ELSE CONCAT('Tipo ', sub.pago_id) END) AS nombre,
-        SUM(sub.cantidad) AS total,
+        SUM(sub.cantidad + sub.propina) AS total,
         SUM(sub.propina) AS total_propina
       FROM (
         SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_pesos > 0
@@ -154,7 +154,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         SELECT 
           sub.pago_id,
           CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' WHEN sub.pago_id = -2 THEN 'CXC' ELSE CONCAT('Método ', sub.pago_id) END AS nombre,
-          SUM(sub.cantidad) AS total,
+          SUM(sub.cantidad + sub.propina) AS total,
           SUM(sub.propina) AS total_propina
         FROM (
           SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_pesos > 0
