@@ -69,6 +69,9 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     const salesRows = await executeQuery(`
       SELECT 
         COUNT(*) AS total_cuentas,
+        COALESCE(SUM(personas), 0) AS total_personas,
+        COALESCE(MIN(folio), 0) AS folio_min,
+        COALESCE(MAX(folio), 0) AS folio_max,
         COALESCE(SUM(subtotal), 0) AS subtotal,
         COALESCE(SUM(descuento), 0) AS total_descuentos,
         COALESCE(SUM(neto), 0) AS venta_neta,
@@ -77,9 +80,15 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         COALESCE(SUM(propina + pago1_propina + pago2_propina + pago3_propina), 0) AS total_propinas,
         COALESCE(SUM(cantidad_pesos), 0) AS pago_efectivo,
         COALESCE(SUM(pago1_cantidad + pago2_cantidad + pago3_cantidad), 0) AS pago_tarjetas,
-        COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares
+        COALESCE(SUM(cantidad_dolares), 0) AS pago_dolares,
+        COALESCE(SUM(
+          (CASE WHEN pago1 = 3 THEN pago1_cantidad ELSE 0 END) +
+          (CASE WHEN pago2 = 3 THEN pago2_cantidad ELSE 0 END) +
+          (CASE WHEN pago3 = 3 THEN pago3_cantidad ELSE 0 END)
+        ), 0) AS total_cortesias,
+        COALESCE(SUM(cargo_cxc), 0) AS total_cxc
       FROM cuentas
-      ${dateWhere};
+      \${dateWhere};
     `);
 
     const salesRow = salesRows && salesRows.length > 0 ? salesRows[0] : null;
@@ -87,6 +96,9 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     if (salesRow) {
       sales = {
         total_cuentas: Number(salesRow.total_cuentas || 0),
+        total_personas: Number(salesRow.total_personas || 0),
+        folio_min: Number(salesRow.folio_min || 0),
+        folio_max: Number(salesRow.folio_max || 0),
         subtotal: Number(salesRow.subtotal || 0),
         total_descuentos: Number(salesRow.total_descuentos || 0),
         venta_neta: Number(salesRow.venta_neta || 0),
@@ -96,6 +108,8 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         pago_efectivo: Number(salesRow.pago_efectivo || 0),
         pago_tarjetas: Number(salesRow.pago_tarjetas || 0),
         pago_dolares: Number(salesRow.pago_dolares || 0),
+        total_cortesias: Number(salesRow.total_cortesias || 0),
+        total_cxc: Number(salesRow.total_cxc || 0),
       };
     }
   } catch (e) {
@@ -107,18 +121,21 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
     const paymentRows = await executeQuery(`
       SELECT 
         sub.pago_id,
-        COALESCE(p.nombre, CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' ELSE CONCAT('Tipo ', sub.pago_id) END) AS nombre,
-        SUM(sub.cantidad) AS total
+        COALESCE(p.nombre, CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' WHEN sub.pago_id = -2 THEN 'CXC' ELSE CONCAT('Tipo ', sub.pago_id) END) AS nombre,
+        SUM(sub.cantidad) AS total,
+        SUM(sub.propina) AS total_propina
       FROM (
-        SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_pesos > 0
+        SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_pesos > 0
         UNION ALL
-        SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_dolares > 0
+        SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_dolares > 0
         UNION ALL
-        SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
+        SELECT -2 AS pago_id, COALESCE(cargo_cxc, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cargo_cxc > 0
         UNION ALL
-        SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+        SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad, COALESCE(pago1_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
         UNION ALL
-        SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
+        SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad, COALESCE(pago2_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+        UNION ALL
+        SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad, COALESCE(pago3_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
       ) sub
       LEFT JOIN pagos p ON sub.pago_id = p.codigo
       GROUP BY sub.pago_id, p.nombre
@@ -128,6 +145,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
       pago_id: Number(r.pago_id),
       nombre: String(r.nombre),
       total: Number(r.total || 0),
+      propina: Number(r.total_propina || 0),
     }));
   } catch (err) {
     console.error('Error fetching payment distribution with join, attempting fallback:', err);
@@ -135,18 +153,21 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
       const fallbackRows = await executeQuery(`
         SELECT 
           sub.pago_id,
-          CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' ELSE CONCAT('Método ', sub.pago_id) END AS nombre,
-          SUM(sub.cantidad) AS total
+          CASE WHEN sub.pago_id = 0 THEN 'Efectivo M.N.' WHEN sub.pago_id = -1 THEN 'Dólares' WHEN sub.pago_id = -2 THEN 'CXC' ELSE CONCAT('Método ', sub.pago_id) END AS nombre,
+          SUM(sub.cantidad) AS total,
+          SUM(sub.propina) AS total_propina
         FROM (
-          SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_pesos > 0
+          SELECT 0 AS pago_id, COALESCE(cantidad_pesos, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_pesos > 0
           UNION ALL
-          SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad FROM cuentas ${dateWhere} AND cantidad_dolares > 0
+          SELECT -1 AS pago_id, COALESCE(cantidad_dolares * COALESCE(dolares_tc, 1), 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cantidad_dolares > 0
           UNION ALL
-          SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
+          SELECT -2 AS pago_id, COALESCE(cargo_cxc, 0) AS cantidad, 0 AS propina FROM cuentas ${dateWhere} AND cargo_cxc > 0
           UNION ALL
-          SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+          SELECT pago1 AS pago_id, COALESCE(pago1_cantidad, 0) AS cantidad, COALESCE(pago1_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago1 IS NOT NULL AND pago1 > 0 AND pago1_cantidad > 0
           UNION ALL
-          SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
+          SELECT pago2 AS pago_id, COALESCE(pago2_cantidad, 0) AS cantidad, COALESCE(pago2_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago2 IS NOT NULL AND pago2 > 0 AND pago2_cantidad > 0
+          UNION ALL
+          SELECT pago3 AS pago_id, COALESCE(pago3_cantidad, 0) AS cantidad, COALESCE(pago3_propina, 0) AS propina FROM cuentas ${dateWhere} AND pago3 IS NOT NULL AND pago3 > 0 AND pago3_cantidad > 0
         ) sub
         GROUP BY sub.pago_id
         ORDER BY total DESC;
@@ -155,6 +176,7 @@ export async function getAdminAuditSummary(range: string = 'hoy', startDate?: st
         pago_id: Number(r.pago_id),
         nombre: String(r.nombre),
         total: Number(r.total || 0),
+        propina: Number(r.total_propina || 0),
       }));
     } catch (fallbackErr) {
       console.error('Fallback payment query failed:', fallbackErr);
